@@ -11,12 +11,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
+import com.aviansh.aifilemanager.domain.AppPaths
 import com.aviansh.aifilemanager.ui.theme.AIFileManagerTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        AppPaths.init(this)
         setContent {
             AIFileManagerTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
