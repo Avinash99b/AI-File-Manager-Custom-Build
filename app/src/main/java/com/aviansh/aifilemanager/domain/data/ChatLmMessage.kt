@@ -13,5 +13,6 @@ enum class ChatLmRole{
 }
 data class ChatLmMessage(
     val role: ChatLmRole,
-    val content: String
+    val content: String,
+    val isUser: Boolean=role==ChatLmRole.USER,
 )

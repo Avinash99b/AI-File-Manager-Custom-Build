@@ -9,11 +9,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.aviansh.aifilemanager.domain.ai.providers.GeminiAIProvider
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AIChatScreen() {
 
+    val aiProvider = GeminiAIProvider()
     var prompt by remember {
         mutableStateOf("")
     }
@@ -93,9 +95,9 @@ fun AIChatScreen() {
                         messages += "👤 $prompt"
 
                         // TODO
-                        // val response = aiEngine.startInteraction(prompt)
-
-                        // messages += "🤖 ${response.message}"
+//                         val response = aiEngine.startInteraction(prompt)
+//
+//                         messages += "🤖 ${response.message}"
 
                         prompt = ""
 

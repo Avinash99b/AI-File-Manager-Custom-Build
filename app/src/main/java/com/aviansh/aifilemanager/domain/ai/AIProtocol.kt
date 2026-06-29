@@ -82,7 +82,7 @@ object AIProtocolParser {
                         if(obj.has("message"))
                             obj.getString("message")
                         else null,
-
+                        generatorCode = obj.getString("generatorCode"),
                         actions=actions
 
                     )

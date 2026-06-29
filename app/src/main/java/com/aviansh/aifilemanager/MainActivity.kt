@@ -6,6 +6,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.aviansh.aifilemanager.domain.AppPaths
 import com.aviansh.aifilemanager.ui.theme.AIFileManagerTheme
+import com.chaquo.python.Python
+import com.chaquo.python.android.AndroidPlatform
 
 class MainActivity : ComponentActivity() {
 
@@ -27,7 +29,7 @@ class MainActivity : ComponentActivity() {
         }
 
         if (! Python.isStarted()) {
-            Python.start(new AndroidPlatform(context));
+            Python.start(AndroidPlatform(this));
         }
 
     }

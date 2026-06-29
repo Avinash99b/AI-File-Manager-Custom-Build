@@ -24,7 +24,7 @@ object PythonEngine {
 
         val builtins = py.getModule("builtins")
 
-        val globals = py.getModule("__main__").dict
+        val globals = py.getModule("__main__")
 
         builtins.callAttr(
             "exec",

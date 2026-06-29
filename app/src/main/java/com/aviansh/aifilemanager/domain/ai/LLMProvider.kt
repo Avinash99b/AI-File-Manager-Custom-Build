@@ -2,7 +2,7 @@ package com.aviansh.aifilemanager.domain.ai
 
 import com.aviansh.aifilemanager.domain.data.ChatLmMessage
 
-interface LLMEngine {
+interface LLMProvider {
 
     /**
      * Sends the complete conversation.

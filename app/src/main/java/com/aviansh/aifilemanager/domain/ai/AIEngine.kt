@@ -5,11 +5,10 @@ import com.aviansh.aifilemanager.domain.data.ChatLmMessage
 import com.aviansh.aifilemanager.domain.data.ChatLmRole
 import com.aviansh.aifilemanager.domain.engines.PythonEngine
 import com.aviansh.aifilemanager.domain.engines.ToyboxEngine
-import org.json.JSONObject
 
 
 class AIEngine(
-    private val llm: LLMEngine
+    private val llm: LLMProvider
 ) {
 
     val interaction = arrayListOf<ChatLmMessage>()
