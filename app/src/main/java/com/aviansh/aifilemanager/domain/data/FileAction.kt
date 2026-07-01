@@ -2,14 +2,12 @@ package com.aviansh.aifilemanager.domain.data
 
 import com.aviansh.aifilemanager.domain.AppPaths
 import java.io.File
-import java.io.InputStream
 
 enum class FileActionType { MOVE, DELETE, COPY, CREATE }
 data class FileAction(
     val type: FileActionType,
     val sourcePath: String,
     val destinationPath: String? = null,
-    val content: InputStream? = null,
     val overwrite: Boolean = false,
     val comment: String = ""
 )
@@ -25,10 +23,10 @@ fun getSnapshotsDir(): File {
 
 
 //Assuming this is only called after snapshot is created.
-fun FileAction.generateInverseAction(transactionId: Long): FileAction {
+fun FileAction.generateInverseAction(transactionId: Long): FileAction? {
     val snapshotFilesDir = getSnapshotsDir()
     val snapshotDir = File(snapshotFilesDir, transactionId.toString())
-    var action: FileAction
+    var action: FileAction? = null
 
     when (this.type) {
         FileActionType.MOVE -> {

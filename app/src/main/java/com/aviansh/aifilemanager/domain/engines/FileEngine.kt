@@ -6,55 +6,63 @@ import java.io.FileNotFoundException
 import java.io.FileOutputStream
 
 object FileEngine {
-    fun copyFile(source:File, dest:File){
-        val inputStream = FileInputStream(dest)
-        val outputStream = FileOutputStream(source)
-        inputStream.copyTo(outputStream)
+
+    /**
+     * Copies [source] → [dest].
+     * Stream direction was previously inverted; fixed here.
+     */
+    fun copyFile(source: File, dest: File) {
+        dest.parentFile?.mkdirs()
+        FileInputStream(source).use { input ->
+            FileOutputStream(dest).use { output ->
+                input.copyTo(output)
+            }
+        }
     }
 
-    fun moveFile(source:File, dest:File){
-        if(dest.exists()){
-            dest.delete()
+    /**
+     * Moves [source] → [dest] (copy then delete source).
+     */
+    fun moveFile(source: File, dest: File) {
+        dest.parentFile?.mkdirs()
+        if (dest.exists()) dest.delete()
+        FileInputStream(source).use { input ->
+            FileOutputStream(dest).use { output ->
+                input.copyTo(output)
+            }
         }
-        dest.createNewFile()
-
-        val inputStream = FileInputStream(dest)
-        val outputStream = FileOutputStream(source)
-        inputStream.copyTo(outputStream)
         source.delete()
     }
-    fun createFile(path: String, tmpFile: File, overwrite: Boolean): File{
-        val sourceFile = File(path)
-        if(sourceFile.exists() && !overwrite){
-            throw FileAlreadyExistsException(sourceFile)
-        }
-        copyFile(sourceFile, tmpFile)
-        return sourceFile
+
+    /**
+     * Writes the content of [tmpFile] to [path].
+     * If the file already exists and [overwrite] is false, throws FileAlreadyExistsException.
+     */
+    fun createFile(path: String, tmpFile: File, overwrite: Boolean): File {
+        val dest = File(path)
+        if (dest.exists() && !overwrite) throw FileAlreadyExistsException(dest)
+        dest.parentFile?.mkdirs()
+        copyFile(tmpFile, dest)
+        return dest
     }
 
-    fun updateFile(path: String, tmpFile: File, create: Boolean=false): File{
-        val sourceFile = File(path)
-        if(!sourceFile.exists() && !create){
-            throw FileNotFoundException()
-        }
-        copyFile(sourceFile, tmpFile)
-        return sourceFile
+    /**
+     * Overwrites the file at [path] with the content of [tmpFile].
+     * If the file does not exist and [create] is false, throws FileNotFoundException.
+     */
+    fun updateFile(path: String, tmpFile: File, create: Boolean = false): File {
+        val dest = File(path)
+        if (!dest.exists() && !create) throw FileNotFoundException("File not found: $path")
+        dest.parentFile?.mkdirs()
+        copyFile(tmpFile, dest)
+        return dest
     }
 
-    fun readFile(path: String): File{
-        return File(path)
-    }
+    fun readFile(path: String): File = File(path)
 
-    fun listDir(basePath: String): List<File>{
-        val dir = File(basePath);
-        if(!dir.exists()){
-            throw FileNotFoundException("Directory Not Found")
-        }
-        val files = dir.listFiles()
-        if (files != null) {
-            return files.toList()
-        }
-
-        return emptyList()
+    fun listDir(basePath: String): List<File> {
+        val dir = File(basePath)
+        if (!dir.exists()) throw FileNotFoundException("Directory not found: $basePath")
+        return dir.listFiles()?.toList() ?: emptyList()
     }
 }

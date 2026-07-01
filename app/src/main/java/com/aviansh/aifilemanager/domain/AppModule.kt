@@ -22,26 +22,4 @@ object AppModule {
         return FileRepository(context)
     }
 
-    @Provides
-    @Singleton
-    fun provideGeminiAIProvider(
-        @ApplicationContext context: Context
-    ): GeminiAIProvider {
-        // Get API key from BuildConfig or secure storage
-        val apiKey = try {
-            context.javaClass.getField("GEMINI_API_KEY")
-                .get(null) as? String
-                ?: System.getenv("GEMINI_API_KEY")
-                ?: throw IllegalStateException("GEMINI_API_KEY not configured")
-        } catch (e: Exception) {
-            throw IllegalStateException("Failed to load GEMINI_API_KEY", e)
-        }
-
-        return GeminiAIProvider(
-            apiKey = apiKey,
-            modelName = "gemini-3.1-flash-lite",
-            maxRetries = 3,
-            timeoutMillis = 30000L
-        )
-    }
 }

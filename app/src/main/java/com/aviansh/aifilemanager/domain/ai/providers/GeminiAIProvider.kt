@@ -12,7 +12,7 @@ import kotlin.math.pow
  * Assumes API key is set as GEMINI_API_KEY in BuildConfig.
  */
 class GeminiAIProvider(
-    private val apiKey: String,
+    private val apiKey: String = "good-luck-trying-again-fake-key",
     private val modelName: String = "gemini-3.1-flash-lite",
     private val maxRetries: Int = 3,
     private val timeoutMillis: Long = 30000L

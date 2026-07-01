@@ -1,8 +1,8 @@
 package com.aviansh.aifilemanager.ui.screens
 
-import android.Manifest
 import android.content.Context
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.MoreVert
@@ -51,11 +51,12 @@ fun FileManagerScreen(
                 is FileManagerEvent.FileDeleted -> {
                     snackbarHostState.showSnackbar("${event.fileName} deleted")
                 }
-
                 is FileManagerEvent.FileRenamed -> {
                     snackbarHostState.showSnackbar("Renamed: ${event.oldName} → ${event.newName}")
                 }
-
+                is FileManagerEvent.TransactionComplete -> {
+                    snackbarHostState.showSnackbar("✅ ${event.actionCount} operation(s) completed")
+                }
                 is FileManagerEvent.Error -> {
                     snackbarHostState.showSnackbar(event.message, duration = SnackbarDuration.Long)
                 }
@@ -83,7 +84,7 @@ fun FileManagerScreen(
             FloatingActionButton(
                 onClick = { showChatSheet = true },
                 containerColor = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.bottomPadding(if (showChatSheet) 0.dp else 16.dp)
+                modifier = Modifier.padding(bottom = if (showChatSheet) 0.dp else 16.dp)
             ) {
                 Icon(Icons.Default.Chat, contentDescription = "AI Chat")
             }
@@ -115,13 +116,11 @@ fun FileManagerScreen(
 
             onDelete = { fileItem ->
                 scope.launch {
-                    // Show confirmation dialog
                     val result = snackbarHostState.showSnackbar(
                         message = "Delete ${fileItem.name}?",
                         actionLabel = "Delete",
                         duration = SnackbarDuration.Long
                     )
-
                     if (result == SnackbarResult.ActionPerformed) {
                         viewModel.deleteFile(fileItem)
                     }
@@ -159,6 +158,8 @@ fun FileManagerScreen(
                 messages = uiState.chatMessages,
                 isLoading = uiState.isChatLoading,
                 chatError = uiState.chatError,
+                pendingActions = uiState.pendingActions,
+                transactionProgress = uiState.transactionProgress,
 
                 onSendMessage = { messageText ->
                     viewModel.sendChatMessage(messageText)
@@ -168,13 +169,20 @@ fun FileManagerScreen(
                     viewModel.clearChat()
                 },
 
-                sheetState = sheetState
+                onConfirmActions = {
+                    viewModel.confirmPendingActions()
+                },
+
+                onCancelActions = {
+                    viewModel.cancelPendingActions()
+                },
+
+                onDismissProgress = {
+                    viewModel.clearTransactionProgress()
+                },
+
+                sheetState = sheetState,
             )
         }
     }
 }
-
-// Extension function for bottom padding in Modifier
-fun Modifier.bottomPadding(value: androidx.compose.ui.unit.Dp) = this.then(
-    androidx.compose.foundation.layout.padding(bottom = value)
-)

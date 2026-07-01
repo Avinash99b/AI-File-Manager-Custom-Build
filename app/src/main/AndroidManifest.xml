@@ -22,6 +22,7 @@
 
     <application
         android:allowBackup="true"
+        android:name=".MainApp"
         android:requestLegacyExternalStorage="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
