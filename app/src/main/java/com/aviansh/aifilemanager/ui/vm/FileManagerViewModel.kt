@@ -1,10 +1,14 @@
 package com.aviansh.aifilemanager.ui.vm
 
+import android.content.Context
+import android.os.Environment
 import android.util.Log
+import android.widget.Toast
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.aviansh.aifilemanager.domain.ai.providers.GeminiAIProvider
-import com.aviansh.aifilemanager.domain.data.AIResponse
+import com.aviansh.aifilemanager.domain.AppPaths
+import com.aviansh.aifilemanager.domain.ai.LLMGenerationResponse
+import com.aviansh.aifilemanager.domain.data.ParsedAIResponse
 import com.aviansh.aifilemanager.domain.data.ChatLmMessage
 import com.aviansh.aifilemanager.domain.data.ChatLmRole
 import com.aviansh.aifilemanager.domain.data.FileAction
@@ -13,7 +17,7 @@ import com.aviansh.aifilemanager.domain.engines.AIOrchestrationEngine
 import com.aviansh.aifilemanager.domain.engines.PythonEngine
 import com.aviansh.aifilemanager.domain.repository.FileItem
 import com.aviansh.aifilemanager.domain.repository.FileRepository
-import com.chaquo.python.Python
+import com.aviansh.aifilemanager.domain.repository.GeminiModelRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -39,7 +43,7 @@ sealed class FileManagerEvent {
 data class FileManagerUIState(
     val files: List<FileItem> = emptyList(),
     val isLoading: Boolean = false,
-    val currentPath: String = "/sdcard/",
+    val currentPath: String = Environment.getExternalStorageDirectory().absolutePath,
     val error: String? = null,
     val selectedFile: FileItem? = null,
 
@@ -55,11 +59,11 @@ data class FileManagerUIState(
     val pendingActions: List<FileAction>? = null
 )
 
-// ─── ViewModel ────────────────────────────────────────────────────────────────
 
 @HiltViewModel
 class FileManagerViewModel @Inject constructor(
-    private val fileRepository: FileRepository
+    private val fileRepository: FileRepository,
+    val geminiRepository: GeminiModelRepository
 ) : ViewModel() {
 
     private val tag = "FileManagerVM"
@@ -70,17 +74,14 @@ class FileManagerViewModel @Inject constructor(
     private val _events = MutableSharedFlow<FileManagerEvent>()
     val events = _events.asSharedFlow()
 
-    private val aiProvider = GeminiAIProvider("")
     private val orchestrationEngine = AIOrchestrationEngine()
 
     init {
         loadFiles(_uiState.value.currentPath)
     }
 
-    // ─── File browsing ────────────────────────────────────────────────────────
-
     fun loadFiles(dirPath: String) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             _uiState.update { it.copy(isLoading = true, error = null, currentPath = dirPath) }
             fileRepository.listFiles(dirPath)
                 .onSuccess { files ->
@@ -96,23 +97,31 @@ class FileManagerViewModel @Inject constructor(
     }
 
     fun navigateToDirectory(fileItem: FileItem) {
-        if (fileItem.isDirectory) loadFiles(fileItem.path)
+        if (fileItem.isDirectory) {
+            loadFiles(fileItem.path)
+        }
     }
 
-    fun navigateUp() {
+    fun navigateUp(context: Context) {
         val current = _uiState.value.currentPath
         val parent = File(current).parent ?: current
-        if (parent != current) loadFiles(parent)
+
+        if (File(parent).absolutePath == File("/storage/emulated/").absolutePath) {
+            Toast.makeText(context, "Cannot go above this directory", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (parent != current) {
+            loadFiles(parent)
+        }
     }
 
     fun selectFile(fileItem: FileItem?) {
         _uiState.update { it.copy(selectedFile = fileItem) }
     }
 
-    // ─── Direct file operations (non-AI) ─────────────────────────────────────
-
     fun deleteFile(fileItem: FileItem) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             fileRepository.deleteFile(filePath = fileItem.path, recursive = fileItem.isDirectory)
                 .onSuccess {
                     Log.d(tag, "Deleted: ${fileItem.name}")
@@ -133,7 +142,8 @@ class FileManagerViewModel @Inject constructor(
             viewModelScope.launch { _events.emit(FileManagerEvent.Error("Name cannot be empty")) }
             return
         }
-        viewModelScope.launch {
+
+        viewModelScope.launch(Dispatchers.IO) {
             fileRepository.renameFile(filePath = fileItem.path, newName = newName)
                 .onSuccess {
                     Log.d(tag, "Renamed: ${fileItem.name} → $newName")
@@ -148,33 +158,36 @@ class FileManagerViewModel @Inject constructor(
         }
     }
 
-    // ─── AI Chat ──────────────────────────────────────────────────────────────
-
-    /**
-     * Sends a chat message to Gemini, then:
-     *  - If the response is conversational → appends a chat bubble.
-     *  - If the response is actionable → parses generator code via Chaquopy,
-     *    surfaces the pending action list to the UI for user confirmation.
-     */
     fun sendChatMessage(messageText: String) {
         if (messageText.isBlank()) return
 
         val userMessage = ChatLmMessage(ChatLmRole.USER, messageText)
         _uiState.update { it.copy(chatMessages = it.chatMessages + userMessage, isChatLoading = true) }
 
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.Default) {
             val systemPrompt = buildSystemPrompt()
-            val context = _uiState.value.chatMessages
-                .takeLast(4)
-                .map { if (it.isUser) "User" to it.content else "Assistant" to it.content }
+            val context = _uiState.value.chatMessages.takeLast(4)
 
-            val rawResponse = aiProvider.sendMessage(
+            val aiProvider = geminiRepository.getProvider()
+
+            if (aiProvider == null) {
+                _uiState.update {
+                    it.copy(
+                        chatMessages = it.chatMessages + ChatLmMessage(ChatLmRole.SYSTEM, "AI Provider not setup"),
+                        isChatLoading = false,
+                        chatError = "AI Provider not setup"
+                    )
+                }
+                return@launch
+            }
+
+            val rawResponse = aiProvider.generate(
                 prompt = messageText,
                 systemPrompt = systemPrompt,
-                conversationContext = context
+                conversation = context
             )
 
-            if (!rawResponse.isSuccess) {
+            if (rawResponse is LLMGenerationResponse.FAILURE) {
                 val errMsg = ChatLmMessage(ChatLmRole.ASSISTANT, "Error: ${rawResponse.error}")
                 _uiState.update {
                     it.copy(
@@ -186,17 +199,21 @@ class FileManagerViewModel @Inject constructor(
                 return@launch
             }
 
-            // Try to parse as AIResponse (structured); fall back to plain chat bubble
-            val aiResponse = tryParseAIResponse(rawResponse.message)
+            val aiResponse = tryParseAIResponse((rawResponse as LLMGenerationResponse.SUCCESS).message)
 
             if (aiResponse != null && aiResponse.actionable) {
                 handleActionableResponse(aiResponse)
             } else {
-                var generatedOutput: String=""
-                if(aiResponse?.generatorCode!=null){
-                    generatedOutput = PythonEngine.generateMessage(aiResponse.generatorCode)
+                var generatedOutput = ""
+                if (aiResponse?.generatorCode != null) {
+                    generatedOutput = try {
+                        PythonEngine.generateMessage(aiResponse.generatorCode)
+                    } catch (e: Exception) {
+                        Log.e(tag, "Python code execution failed", e)
+                        ""
+                    }
                 }
-                // Plain conversational reply
+
                 val assistantMessage = ChatLmMessage(
                     ChatLmRole.ASSISTANT,
                     aiResponse?.message ?: rawResponse.message
@@ -204,28 +221,34 @@ class FileManagerViewModel @Inject constructor(
 
                 _uiState.update {
                     it.copy(
-                        chatMessages = it.chatMessages + assistantMessage + ChatLmMessage(role = ChatLmRole.TOOL, content = generatedOutput),
+                        chatMessages = it.chatMessages + assistantMessage,
                         isChatLoading = false,
                         chatError = null
                     )
+                }
+
+                if (generatedOutput.isNotEmpty()) {
+                    _uiState.update {
+                        it.copy(
+                            chatMessages = it.chatMessages + ChatLmMessage(
+                                role = ChatLmRole.TOOL,
+                                content = generatedOutput
+                            )
+                        )
+                    }
                 }
             }
         }
     }
 
-    /**
-     * Called when the AI response is actionable:
-     * runs the generator code via Chaquopy and shows the pending action list.
-     */
-    private suspend fun handleActionableResponse(aiResponse: AIResponse) {
+    private suspend fun handleActionableResponse(aiResponse: ParsedAIResponse) {
         orchestrationEngine.executeAIResponse(aiResponse).collect { progress ->
             when (progress) {
                 is TransactionProgress.Pending -> {
                     val preview = buildActionSummary(progress.actions)
                     val proposalMessage = ChatLmMessage(
                         role = ChatLmRole.ASSISTANT,
-                        content = (aiResponse.message ?: "I'll make these changes:") + "\n\n$preview",
-                        pendingActions = progress.actions
+                        content = (aiResponse.message ?: "I'll make these changes:") + "\n\n$preview"
                     )
                     _uiState.update {
                         it.copy(
@@ -256,11 +279,6 @@ class FileManagerViewModel @Inject constructor(
         }
     }
 
-    // ─── Transaction confirmation flow ────────────────────────────────────────
-
-    /**
-     * Called when the user taps "Confirm" on the pending action card.
-     */
     fun confirmPendingActions() {
         val actions = _uiState.value.pendingActions ?: return
         _uiState.update { it.copy(pendingActions = null, transactionProgress = TransactionProgress.Running) }
@@ -300,9 +318,6 @@ class FileManagerViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Called when the user taps "Cancel" on the pending action card.
-     */
     fun cancelPendingActions() {
         _uiState.update { it.copy(pendingActions = null) }
         val cancelMsg = ChatLmMessage(ChatLmRole.ASSISTANT, "Cancelled — no changes were made.")
@@ -313,8 +328,6 @@ class FileManagerViewModel @Inject constructor(
         _uiState.update { it.copy(transactionProgress = TransactionProgress.Idle) }
     }
 
-    // ─── Chat helpers ─────────────────────────────────────────────────────────
-
     fun clearChat() {
         _uiState.update { it.copy(chatMessages = emptyList(), chatError = null, pendingActions = null) }
     }
@@ -323,14 +336,15 @@ class FileManagerViewModel @Inject constructor(
         You are an AI-powered Android file manager assistant.
 
         CURRENT CONTEXT
-        Current directory: {currentPath}
-        Visible files (first 20): {visibleFiles}
+        Current directory: ${_uiState.value.currentPath}
+        Visible files (first 20): ${_uiState.value.files.take(20).joinToString(", ") { it.name }}
+        Working root: /storage/emulated/0
 
         ────────────────────────────────────────────────────────
         RESPONSE FORMAT
 
-        Your response MUST always be a single valid JSON object.
-        Never output markdown, explanations, or code fences.
+        Respond with a single valid JSON object only. No markdown, no code
+        fences, no text outside the JSON.
 
         Schema:
         {
@@ -339,45 +353,56 @@ class FileManagerViewModel @Inject constructor(
           "message": "short user-facing summary"
         }
 
+        - actionable = true  -> generatorCode's generate() returns a list of
+          file-action objects (move/copy/delete/create) that the app executes
+          via TransactionEngine.
+        - actionable = false -> generatorCode (if present) returns report or
+          text data (search results, file contents, storage stats). It is
+          NOT executed as file actions -- its return value is appended to the
+          chat message for the user to read.
+        - If nothing needs to run, set generatorCode to null.
+
         ────────────────────────────────────────────────────────
-        CRITICAL: PATH SAFETY RULES (read before every response)
+        PATH SAFETY (applies to every generatorCode you write)
 
-        1. NEVER hardcode a path that was mentioned in the chat conversation.
-           File paths from previous messages are UNVERIFIED. Always rediscover
-           them at runtime using Python's os / glob / pathlib.
-
-        2. For ANY destructive action (delete, move, overwrite):
-           - generatorCode MUST scan the filesystem at runtime to build
-             the list of paths to act on.
-           - The generated Python must verify each path exists with
-             os.path.exists() before including it in the returned list.
-           - NEVER build an action list from a path string the user typed
-             or that appeared in a prior assistant message.
-
-        3. The only paths you may inline into generatorCode are:
-           - Well-known Android roots that always exist:
-             /sdcard/, /storage/emulated/0/, /data/user/0/ (root only)
-           - Paths explicitly confirmed by a PREVIOUS generatorCode scan
-             returned in this same session (not from chat text).
-
-        4. If you cannot safely discover paths at runtime, ask the user
-           to confirm the exact location before proceeding.
+        1. Never hardcode a path that appeared anywhere in the chat -- user
+           message or your own prior message. Chat-provided paths are
+           unverified; always rediscover them at runtime with os/glob/pathlib.
+        2. Every path you act on (move, copy, delete, overwrite, read) must
+           be checked with os.path.exists() at runtime before use.
+        3. The only paths you may inline directly are:
+           - Fixed Android roots: /sdcard/, /storage/emulated/0/,
+             /data/user/0/ (root-only)
+           - Paths a PREVIOUS generatorCode already scanned and returned in
+             this session (not paths typed in chat text)
+        4. If a request can't be safely resolved to a runtime-discoverable
+           path, ask the user to clarify instead of guessing.
+        5. Start every generatorCode by calling
+           os.chdir("/storage/emulated/0") before navigating to
+           ${_uiState.value.currentPath} or any other target directory.
 
         ────────────────────────────────────────────────────────
         PYTHON CODE RULES
 
-        - Define exactly one function: generate()
-        - generate() must return JSON-serialisable data
-        - Never print, read stdin, or use the network
-        - Use only the Python standard library
-        - Always check os.path.exists(path) before acting on a path
+        - Exactly one function: generate()
+        - Return JSON-serialisable data only
+        - Standard library only, no stdin, no print for control flow
+        - No network access, EXCEPT when the user explicitly asks to
+          download something -- in that case use urllib.request (stdlib) to
+          fetch into the app cache dir (${AppPaths.cacheDir}) first, then
+          move the result to the user's requested destination as part of the
+          same action list
+        - For batch/bulk requests ("delete all screenshots", "move every
+          PDF"), scan with glob/os.walk to build the full target list --
+          don't ask the user to enumerate files one by one
+        - To read/view a file's contents, use actionable:false and have
+          generate() open the file (after an exists check) and return its
+          text. There is no separate "read" action type -- the returned text
+          is shown directly in the chat message.
 
         ────────────────────────────────────────────────────────
-        WHEN actionable = true
+        ACTION SCHEMA (when actionable = true)
 
-        generate() must return a list of file-action objects.
-
-        Action schema:
         {
           "action": "move | copy | delete | create",
           "source": "/absolute/path",
@@ -386,79 +411,48 @@ class FileManagerViewModel @Inject constructor(
           "comment": "optional description"
         }
 
-        CORRECT pattern for delete based on a user request:
-
-          def generate():
-              import os, glob
-              # Rediscover files at runtime — never trust paths from chat
-              targets = glob.glob('/sdcard/Download/*.zip', recursive=False)
-              return [
-                  {"action": "delete", "source": p,
-                   "destination": None, "overwrite": False,
-                   "comment": f"Deleting {os.path.basename(p)}"}
-                  for p in targets if os.path.exists(p)
-              ]
-
-        WRONG — do not do this:
-
-          def generate():
-              # BAD: path was copied from the conversation, not verified
-              return [{"action": "delete",
-                       "source": "/sdcard/Download/debug-apk.zip", ...}]
-
-        ────────────────────────────────────────────────────────
-        WHEN actionable = false
-
-        Use generatorCode only if a filesystem scan is needed:
-          • Find / search files
-          • Filter by extension, size, or date
-          • List duplicates
-          • Calculate directory sizes
-          • Generate storage reports
-
-        generate() should return report data, NOT file actions.
-
-        If no scan is needed, set generatorCode to null and return
-        only a conversational message.
-
         ────────────────────────────────────────────────────────
         EXAMPLES
 
-        Delete all ZIPs in Downloads (safe — runtime scan):
-        {"actionable":true,"generatorCode":"def generate():\n    import os,glob\n    files=glob.glob('/sdcard/Download/*.zip')\n    return [{'action':'delete','source':p,'destination':None,'overwrite':False,'comment':'zip file'} for p in files if os.path.exists(p)]","message":"Scanning Downloads and deleting all ZIP files."}
+        Batch delete (safe -- runtime scan):
+        {"actionable":true,"generatorCode":"def generate():\n    import os, glob\n    files = glob.glob('/sdcard/Download/*.zip')\n    return [{'action':'delete','source':p,'destination':None,'overwrite':False,'comment':'zip file'} for p in files if os.path.exists(p)]","message":"Scanning Downloads and deleting all ZIP files."}
 
-        Find all PDFs on device:
-        {"actionable":false,"generatorCode":"def generate():\n    import os\n    found=[]\n    for r,_,files in os.walk('/sdcard'):\n        for f in files:\n            if f.lower().endswith('.pdf'):\n                found.append(os.path.join(r,f))\n    return found","message":"Searching for PDF files on your device."}
+        Search / report (non-actionable):
+        {"actionable":false,"generatorCode":"def generate():\n    import os\n    found = []\n    for r,_,files in os.walk('/sdcard'):\n        for f in files:\n            if f.lower().endswith('.pdf'):\n                found.append(os.path.join(r,f))\n    return found","message":"Searching for PDF files on your device."}
 
-        Simple question:
+        Read a file's contents:
+        {"actionable":false,"generatorCode":"def generate():\n    import os\n    path = '/sdcard/Download/notes.txt'\n    if not os.path.exists(path):\n        return 'File not found.'\n    with open(path, 'r', errors='replace') as f:\n        return f.read()","message":"Reading notes.txt."}
+
+        Simple conversational reply:
         {"actionable":false,"generatorCode":null,"message":"Hello! How can I help you manage your files?"}
     """.trimIndent()
 
-    /**
-     * Attempts to parse the model output as a structured [AIResponse].
-     * Returns null if the text is not JSON or doesn't match the expected shape.
-     */
-    private fun tryParseAIResponse(raw: String): AIResponse? {
+    private fun tryParseAIResponse(raw: String): ParsedAIResponse? {
         return try {
             val trimmed = raw.trim()
-                .removePrefix("```json").removePrefix("```")
-                .removeSuffix("```").trim()
+                .removePrefix("```json")
+                .removePrefix("```")
+                .removeSuffix("```")
+                .trim()
             val obj = org.json.JSONObject(trimmed)
-            AIResponse(
+            ParsedAIResponse(
                 actionable = obj.optBoolean("actionable", false),
-                generatorCode = if (obj.has("generatorCode")) obj.getString("generatorCode") else null,
-                message = if (obj.has("message")) obj.getString("message") else null
+                generatorCode = obj.optString("generatorCode", null)?.takeIf { it != "null" },
+                message = obj.optString("message", null)
             )
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to parse AI response", e)
             null
         }
     }
 
     private fun buildActionSummary(actions: List<FileAction>): String = buildString {
         actions.forEachIndexed { i, action ->
-            appendLine("${i + 1}. ${action.type.name.lowercase().replaceFirstChar { it.uppercase() }}: " +
-                    action.sourcePath +
-                    (action.destinationPath?.let { " → $it" } ?: ""))
+            appendLine(
+                "${i + 1}. ${action.type.name.lowercase().replaceFirstChar { it.uppercase() }}: " +
+                        action.sourcePath +
+                        (action.destinationPath?.let { " → $it" } ?: "")
+            )
         }
     }.trimEnd()
 }

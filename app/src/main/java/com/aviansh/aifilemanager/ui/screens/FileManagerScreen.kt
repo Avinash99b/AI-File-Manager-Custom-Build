@@ -28,7 +28,8 @@ import kotlinx.coroutines.launch
 fun FileManagerScreen(
     context: Context,
     viewModel: FileManagerViewModel = hiltViewModel(),
-    onPermissionDenied: () -> Unit = {}
+    onPermissionDenied: () -> Unit = {},
+    onSettingsClick: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val events by viewModel.events.collectAsState(null)
@@ -69,7 +70,7 @@ fun FileManagerScreen(
             TopAppBar(
                 title = { Text("File Manager") },
                 actions = {
-                    IconButton(onClick = { /* TODO: Settings */ }) {
+                    IconButton(onClick = onSettingsClick) {
                         Icon(Icons.Default.MoreVert, contentDescription = "More options")
                     }
                 },
@@ -111,7 +112,7 @@ fun FileManagerScreen(
             },
 
             onNavigateUp = {
-                viewModel.navigateUp()
+                viewModel.navigateUp(context)
             },
 
             onDelete = { fileItem ->

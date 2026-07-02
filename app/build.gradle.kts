@@ -24,7 +24,7 @@ android {
 
     defaultConfig {
         applicationId = "com.aviansh.aifilemanager"
-        minSdk = 24
+        minSdk = 26
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
@@ -79,6 +79,8 @@ dependencies {
 
     // Hilt (Aligning runtime with your version 2.60 plugin)
     implementation("com.google.dagger:hilt-android:2.60")
+    implementation(libs.androidx.compose.foundation)
+    implementation(libs.compose.material3)
     ksp("com.google.dagger:hilt-compiler:2.60")
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
 
@@ -86,12 +88,15 @@ dependencies {
     // This is the clean, correct declaration for the standard Google AI client.
     // Gradle will automatically bring in the correct matching version of 'common' and 'ktor'.
     implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
+    implementation("androidx.navigation:navigation-compose:2.9.8")
 
     // ---------------------------------
 
     // Debug Tools
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+// For Kotlin / KMP projects
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
 
     // Unit & Android Tests
     testImplementation("junit:junit:4.13.2")

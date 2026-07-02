@@ -17,15 +17,14 @@ data class FileActionsPreviewResult(
     val filesDeleted: Int, //delete as delete
     val filesUpdated: Int, //Copy or move is categorized as updated
 )
-fun getSnapshotsDir(): File {
-    return File(AppPaths.filesDir, "snapshots")
+
+fun getTmpDir(): File{
+    return File(AppPaths.filesDir, "tmpFilesDir")
 }
 
-
 //Assuming this is only called after snapshot is created.
-fun FileAction.generateInverseAction(transactionId: Long): FileAction? {
-    val snapshotFilesDir = getSnapshotsDir()
-    val snapshotDir = File(snapshotFilesDir, transactionId.toString())
+fun FileAction.generateInverseAction(): FileAction? {
+    val tmpDir = getTmpDir()
     var action: FileAction? = null
 
     when (this.type) {
@@ -41,8 +40,8 @@ fun FileAction.generateInverseAction(transactionId: Long): FileAction? {
 
         FileActionType.DELETE -> {
             action = FileAction(
-                FileActionType.CREATE,
-                File(snapshotDir, File(sourcePath).name).absolutePath,
+                FileActionType.MOVE,
+                File(tmpDir, File(sourcePath).name).absolutePath,
                 this.sourcePath,
                 comment="Rollback for ${this.comment}"
             )
@@ -51,7 +50,7 @@ fun FileAction.generateInverseAction(transactionId: Long): FileAction? {
         FileActionType.COPY -> {
             action = FileAction(
                 FileActionType.COPY,
-                File(snapshotDir, File(destinationPath!!).name).absolutePath,
+                File(tmpDir, File(destinationPath!!).name).absolutePath,
                 this.destinationPath,
                 comment="Rollback for ${this.comment}"
             )

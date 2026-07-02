@@ -4,6 +4,9 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
+import java.nio.file.Files
+import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
 
 object FileEngine {
 
@@ -24,14 +27,14 @@ object FileEngine {
      * Moves [source] → [dest] (copy then delete source).
      */
     fun moveFile(source: File, dest: File) {
-        dest.parentFile?.mkdirs()
-        if (dest.exists()) dest.delete()
-        FileInputStream(source).use { input ->
-            FileOutputStream(dest).use { output ->
-                input.copyTo(output)
-            }
-        }
-        source.delete()
+
+        val sourcePath = Paths.get(source.absolutePath)
+        val targetPath = Paths.get(dest.absolutePath)
+
+        dest.parentFile?.let { if (!it.exists()) it.mkdirs() }
+
+        // Move the file and overwrite if the target already exists
+        Files.move(sourcePath, targetPath, StandardCopyOption.REPLACE_EXISTING)
     }
 
     /**

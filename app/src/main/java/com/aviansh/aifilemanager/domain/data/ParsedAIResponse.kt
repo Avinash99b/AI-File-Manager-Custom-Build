@@ -1,7 +1,7 @@
 package com.aviansh.aifilemanager.domain.data
 
 
-data class AIResponse(
+data class ParsedAIResponse(
     val actionable: Boolean,
     val generatorCode: String?,
     val message: String?,
