@@ -107,7 +107,7 @@ class TransactionEngine {
                 if (dest.exists()) {
                     FileEngine.copyFile(dest, File(tmpDir, dest.name))
                 }
-                FileEngine.createFile(action.sourcePath, dest, action.overwrite)
+                FileEngine.createFile(tmpFile = File(action.sourcePath), path =  dest.absolutePath, overwrite = action.overwrite)
             }
 
         }

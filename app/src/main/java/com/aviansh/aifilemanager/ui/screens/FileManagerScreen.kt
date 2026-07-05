@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.aviansh.aifilemanager.domain.repository.FileRepository
+import com.aviansh.aifilemanager.ui.components.AIChatBottomSheet
 import com.aviansh.aifilemanager.ui.vm.FileManagerEvent
 import com.aviansh.aifilemanager.ui.vm.FileManagerViewModel
 import kotlinx.coroutines.launch

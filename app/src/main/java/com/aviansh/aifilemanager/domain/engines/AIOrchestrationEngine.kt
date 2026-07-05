@@ -34,7 +34,7 @@ class AIOrchestrationEngine(
             response.generatorCode != null -> {
                 Log.d(TAG, "Running Chaquopy generator to resolve actions")
                 try {
-                    PythonEngine.generateActions(response.generatorCode)
+                   PythonEngine.generateActions(response.generatorCode)
                 } catch (e: Exception) {
                     Log.e(TAG, "Generator failed", e)
                     emit(TransactionProgress.Failed("Generator error: ${e.message}"))

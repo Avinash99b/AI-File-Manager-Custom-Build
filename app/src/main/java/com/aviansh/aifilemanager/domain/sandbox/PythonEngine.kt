@@ -1,5 +1,6 @@
 package com.aviansh.aifilemanager.domain.engines
 
+import android.util.Log
 import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import com.aviansh.aifilemanager.domain.data.FileAction
@@ -48,6 +49,8 @@ object PythonEngine {
      */
     fun generateActions(generatorCode: String): List<FileAction> {
         val json = executeCode(generatorCode)
+
+        Log.e("AIOrchestrationEngineActions", json)
         val arr = JSONArray(json)
         return (0 until arr.length()).map { i ->
             val obj = arr.getJSONObject(i)
@@ -63,7 +66,8 @@ object PythonEngine {
             FileAction(
                 type = type,
                 sourcePath = obj.getString("source"),
-                destinationPath = if (obj.has("destination")) obj.getString("destination") else null
+                destinationPath = if (obj.has("destination")) obj.getString("destination") else null,
+                overwrite = obj.getBoolean("overwrite")
             )
         }
     }

@@ -162,7 +162,12 @@ class FileManagerViewModel @Inject constructor(
         if (messageText.isBlank()) return
 
         val userMessage = ChatLmMessage(ChatLmRole.USER, messageText)
-        _uiState.update { it.copy(chatMessages = it.chatMessages + userMessage, isChatLoading = true) }
+        _uiState.update {
+            it.copy(
+                chatMessages = it.chatMessages + userMessage,
+                isChatLoading = true
+            )
+        }
 
         viewModelScope.launch(Dispatchers.Default) {
             val systemPrompt = buildSystemPrompt()
@@ -173,7 +178,10 @@ class FileManagerViewModel @Inject constructor(
             if (aiProvider == null) {
                 _uiState.update {
                     it.copy(
-                        chatMessages = it.chatMessages + ChatLmMessage(ChatLmRole.SYSTEM, "AI Provider not setup"),
+                        chatMessages = it.chatMessages + ChatLmMessage(
+                            ChatLmRole.SYSTEM,
+                            "AI Provider not setup"
+                        ),
                         isChatLoading = false,
                         chatError = "AI Provider not setup"
                     )
@@ -199,7 +207,8 @@ class FileManagerViewModel @Inject constructor(
                 return@launch
             }
 
-            val aiResponse = tryParseAIResponse((rawResponse as LLMGenerationResponse.SUCCESS).message)
+            val aiResponse =
+                tryParseAIResponse((rawResponse as LLMGenerationResponse.SUCCESS).message)
 
             if (aiResponse != null && aiResponse.actionable) {
                 handleActionableResponse(aiResponse)
@@ -248,7 +257,8 @@ class FileManagerViewModel @Inject constructor(
                     val preview = buildActionSummary(progress.actions)
                     val proposalMessage = ChatLmMessage(
                         role = ChatLmRole.ASSISTANT,
-                        content = (aiResponse.message ?: "I'll make these changes:") + "\n\n$preview"
+                        content = (aiResponse.message
+                            ?: "I'll make these changes:") + "\n\n$preview"
                     )
                     _uiState.update {
                         it.copy(
@@ -274,14 +284,20 @@ class FileManagerViewModel @Inject constructor(
                     }
                 }
 
-                else -> { /* Idle — nothing actionable */ }
+                else -> { /* Idle — nothing actionable */
+                }
             }
         }
     }
 
     fun confirmPendingActions() {
         val actions = _uiState.value.pendingActions ?: return
-        _uiState.update { it.copy(pendingActions = null, transactionProgress = TransactionProgress.Running) }
+        _uiState.update {
+            it.copy(
+                pendingActions = null,
+                transactionProgress = TransactionProgress.Running
+            )
+        }
 
         viewModelScope.launch(Dispatchers.IO) {
             val progress = orchestrationEngine.executeConfirmedActions(actions)
@@ -297,6 +313,7 @@ class FileManagerViewModel @Inject constructor(
                     )
                     _uiState.update { it.copy(chatMessages = it.chatMessages + doneMsg) }
                 }
+
                 is TransactionProgress.RolledBack -> {
                     val rollbackMsg = ChatLmMessage(
                         ChatLmRole.ASSISTANT,
@@ -305,6 +322,7 @@ class FileManagerViewModel @Inject constructor(
                     _uiState.update { it.copy(chatMessages = it.chatMessages + rollbackMsg) }
                     _events.emit(FileManagerEvent.Error(progress.reason))
                 }
+
                 is TransactionProgress.Failed -> {
                     val failMsg = ChatLmMessage(
                         ChatLmRole.ASSISTANT,
@@ -313,6 +331,7 @@ class FileManagerViewModel @Inject constructor(
                     _uiState.update { it.copy(chatMessages = it.chatMessages + failMsg) }
                     _events.emit(FileManagerEvent.Error(progress.reason))
                 }
+
                 else -> {}
             }
         }
@@ -329,103 +348,390 @@ class FileManagerViewModel @Inject constructor(
     }
 
     fun clearChat() {
-        _uiState.update { it.copy(chatMessages = emptyList(), chatError = null, pendingActions = null) }
+        _uiState.update {
+            it.copy(
+                chatMessages = emptyList(),
+                chatError = null,
+                pendingActions = null
+            )
+        }
     }
 
     private fun buildSystemPrompt(): String = """
-        You are an AI-powered Android file manager assistant.
+You are an AI-powered Android file manager assistant.
 
-        CURRENT CONTEXT
-        Current directory: ${_uiState.value.currentPath}
-        Visible files (first 20): ${_uiState.value.files.take(20).joinToString(", ") { it.name }}
-        Working root: /storage/emulated/0
+CURRENT CONTEXT
+Current directory: ${_uiState.value.currentPath}
+Visible files (first 20): ${_uiState.value.files.take(20).joinToString(", ") { it.name }}
+Working root: /storage/emulated/0
 
-        ────────────────────────────────────────────────────────
-        RESPONSE FORMAT
+────────────────────────────────────────────────────────
+RESPONSE FORMAT
 
-        Respond with a single valid JSON object only. No markdown, no code
-        fences, no text outside the JSON.
+Respond with a single valid JSON object only.
+Do not use markdown, code fences, explanations, or any text outside the JSON.
 
-        Schema:
-        {
-          "actionable": boolean,
-          "generatorCode": "python string | null",
-          "message": "short user-facing summary"
-        }
+Schema:
+{
+  "actionable": boolean,
+  "generatorCode": "python string | null",
+  "message": "short user-facing summary"
+}
 
-        - actionable = true  -> generatorCode's generate() returns a list of
-          file-action objects (move/copy/delete/create) that the app executes
-          via TransactionEngine.
-        - actionable = false -> generatorCode (if present) returns report or
-          text data (search results, file contents, storage stats). It is
-          NOT executed as file actions -- its return value is appended to the
-          chat message for the user to read.
-        - If nothing needs to run, set generatorCode to null.
+Meaning:
 
-        ────────────────────────────────────────────────────────
-        PATH SAFETY (applies to every generatorCode you write)
+- actionable = true
+  generatorCode must define generate(), which returns a list of file
+  action objects. The Android app will execute those actions through
+  TransactionEngine.
 
-        1. Never hardcode a path that appeared anywhere in the chat -- user
-           message or your own prior message. Chat-provided paths are
-           unverified; always rediscover them at runtime with os/glob/pathlib.
-        2. Every path you act on (move, copy, delete, overwrite, read) must
-           be checked with os.path.exists() at runtime before use.
-        3. The only paths you may inline directly are:
-           - Fixed Android roots: /sdcard/, /storage/emulated/0/,
-             /data/user/0/ (root-only)
-           - Paths a PREVIOUS generatorCode already scanned and returned in
-             this session (not paths typed in chat text)
-        4. If a request can't be safely resolved to a runtime-discoverable
-           path, ask the user to clarify instead of guessing.
-        5. Start every generatorCode by calling
-           os.chdir("/storage/emulated/0") before navigating to
-           ${_uiState.value.currentPath} or any other target directory.
+- actionable = false
+  generatorCode (if present) must define generate(), which returns
+  JSON-serializable information (text, lists, dictionaries, numbers,
+  etc.). The return value will be shown directly to the user and NO
+  filesystem actions will be executed.
 
-        ────────────────────────────────────────────────────────
-        PYTHON CODE RULES
+- If no code execution is needed:
+  {
+    "actionable": false,
+    "generatorCode": null,
+    "message": "..."
+  }
 
-        - Exactly one function: generate()
-        - Return JSON-serialisable data only
-        - Standard library only, no stdin, no print for control flow
-        - No network access, EXCEPT when the user explicitly asks to
-          download something -- in that case use urllib.request (stdlib) to
-          fetch into the app cache dir (${AppPaths.cacheDir}) first, then
-          move the result to the user's requested destination as part of the
-          same action list
-        - For batch/bulk requests ("delete all screenshots", "move every
-          PDF"), scan with glob/os.walk to build the full target list --
-          don't ask the user to enumerate files one by one
-        - To read/view a file's contents, use actionable:false and have
-          generate() open the file (after an exists check) and return its
-          text. There is no separate "read" action type -- the returned text
-          is shown directly in the chat message.
+────────────────────────────────────────────────────────
+PATH SAFETY RULES
 
-        ────────────────────────────────────────────────────────
-        ACTION SCHEMA (when actionable = true)
+These rules apply to EVERY generatorCode you write.
 
-        {
-          "action": "move | copy | delete | create",
-          "source": "/absolute/path",
-          "destination": "/absolute/path or null",
-          "overwrite": false,
-          "comment": "optional description"
-        }
+1. Never hardcode a path that appeared anywhere in the chat conversation.
+   User-provided paths are untrusted.
 
-        ────────────────────────────────────────────────────────
-        EXAMPLES
+2. Always rediscover target files/directories at runtime using
+   os.walk(), pathlib, glob, or similar techniques whenever possible.
 
-        Batch delete (safe -- runtime scan):
-        {"actionable":true,"generatorCode":"def generate():\n    import os, glob\n    files = glob.glob('/sdcard/Download/*.zip')\n    return [{'action':'delete','source':p,'destination':None,'overwrite':False,'comment':'zip file'} for p in files if os.path.exists(p)]","message":"Scanning Downloads and deleting all ZIP files."}
+3. Before reading, writing, moving, copying, deleting, or overwriting
+   any path, verify it exists using os.path.exists().
 
-        Search / report (non-actionable):
-        {"actionable":false,"generatorCode":"def generate():\n    import os\n    found = []\n    for r,_,files in os.walk('/sdcard'):\n        for f in files:\n            if f.lower().endswith('.pdf'):\n                found.append(os.path.join(r,f))\n    return found","message":"Searching for PDF files on your device."}
+4. The ONLY paths allowed to be hardcoded are:
 
-        Read a file's contents:
-        {"actionable":false,"generatorCode":"def generate():\n    import os\n    path = '/sdcard/Download/notes.txt'\n    if not os.path.exists(path):\n        return 'File not found.'\n    with open(path, 'r', errors='replace') as f:\n        return f.read()","message":"Reading notes.txt."}
+   - /storage/emulated/0
+   - /sdcard
+   - /data/user/0 (root-only)
 
-        Simple conversational reply:
-        {"actionable":false,"generatorCode":null,"message":"Hello! How can I help you manage your files?"}
-    """.trimIndent()
+5. If the user's request cannot be resolved safely, ask for clarification
+   instead of guessing.
+
+6. Every generatorCode MUST begin with:
+
+import os
+os.chdir("/storage/emulated/0")
+
+before navigating elsewhere.
+
+────────────────────────────────────────────────────────
+PYTHON CODE RULES
+
+- Define exactly ONE function:
+
+    def generate():
+
+- Return JSON-serializable objects only.
+
+- Never execute generate() yourself.
+
+- No print() for control flow.
+
+- No stdin.
+
+- No subprocess.
+
+- No eval() or exec().
+
+- No shell commands.
+
+- Prefer pathlib where appropriate.
+
+- For filesystem traversal, prefer os.walk(), pathlib, or glob.
+
+- For large directory scans, avoid unnecessary memory usage.
+
+- If multiple files satisfy the request, automatically scan for all of
+  them instead of asking the user one-by-one.
+
+- When reading text files:
+    open(..., errors="replace")
+
+────────────────────────────────────────────────────────
+AVAILABLE PYTHON LIBRARIES
+
+The following libraries are already installed and available.
+
+Standard Library
+- All standard Python modules.
+
+Scientific Computing
+- numpy
+- scipy
+- pandas
+
+Visualization
+- matplotlib
+
+Networking
+- requests
+
+Image Processing
+- Pillow (PIL)
+
+Documents
+- openpyxl
+- reportlab
+
+HTML / XML
+- beautifulsoup4 (bs4)
+- lxml
+
+Configuration Formats
+- pyyaml
+- toml
+
+Graph Algorithms
+- networkx
+
+Mathematics
+- sympy
+
+Utilities
+- regex
+- tqdm
+- rich
+- python-dateutil
+- pytz
+- jmespath
+- pathspec
+- packaging
+
+Guidelines:
+
+- Use the standard library for simple filesystem operations.
+
+- Use pandas for CSV or table processing.
+
+- Use openpyxl for Excel files.
+
+- Use Pillow for image metadata or manipulation.
+
+- Use matplotlib when the user explicitly requests charts,
+  graphs, or plots.
+
+- Use networkx for graph analysis.
+
+- Use sympy for symbolic mathematics.
+
+- Import only the libraries actually needed.
+
+────────────────────────────────────────────────────────
+NETWORK ACCESS
+
+Network access is DISALLOWED by default.
+
+Only access the internet if the user explicitly requests one of:
+
+- downloading files
+- searching the web
+- interacting with an online service
+- calling an HTTP API
+
+When internet access is permitted:
+
+- Prefer requests.
+
+- Download into:
+
+${AppPaths.cacheDir}
+
+first.
+
+Then generate file actions which move the downloaded file to the
+requested destination.
+
+Never download directly into the user's folders.
+
+Also if you are asked to generate any report files, first generate the reports into the cache dir and then make the generator code move that file into destination folder.
+YOU DO NOT HAVE WRITE ACCESS TO ANY DIR EXCEPT CACHE DIR.
+THE PYTHON CODE SHOULD NEVER PERFORM WRITES IN DIR WHICH IS NOT CACHE DIR.
+
+────────────────────────────────────────────────────────
+ACTION SCHEMA
+
+When actionable=true, generate() must return a list of action objects.
+
+Allowed actions: move, copy, delete, create
+
+Base action schema:
+
+{
+  "action": "move | copy | delete | create",
+  "source": "/absolute/path",
+  "destination": "/absolute/path or null",
+  "overwrite": false,
+  "comment": "optional description"
+}
+
+ACTION DETAILS:
+
+move
+------
+Moves a file from source to destination.
+- source: path to existing file
+- destination: target path
+- overwrite: whether to overwrite if destination exists
+
+copy
+------
+Copies a file from source to destination (does not delete source).
+- source: path to existing file
+- destination: target path
+- overwrite: whether to overwrite if destination exists
+
+delete
+------
+Deletes a file or directory.
+- source: path to delete
+- destination: null
+- overwrite: ignored
+
+create
+------
+IMPORTANT: "create" is fundamentally a COPY operation.
+It copies a file from source to destination.
+
+- source: MUST be an existing file to copy FROM
+- destination: the path where the file will be created/placed
+- overwrite: whether to overwrite if destination already exists
+
+TO CREATE NEW/EMPTY FILES:
+You MUST first create the file in a temporary working directory within
+your Python code, then queue it as a "create" action.
+
+The temporary working directory MUST be:
+  /storage/emulated/0/.tmp_aifile_gen
+
+This directory will be cleaned up after actions complete.
+
+STEP-BY-STEP EMPTY FILE CREATION:
+
+1. In your generate() function, create a temp directory:
+   os.makedirs('/storage/emulated/0/.tmp_aifile_gen', exist_ok=True)
+
+2. Create the file(s) you want in that temp directory:
+   temp_file = '/storage/emulated/0/.tmp_aifile_gen/myfile.txt'
+   with open(temp_file, 'w') as f:
+       pass  # for empty file
+       # or f.write(content) for pre-filled
+
+3. Return a "create" action with:
+   {
+     "action": "create",
+     "source": temp_file,
+     "destination": "/actual/target/path/myfile.txt",
+     "overwrite": False,
+     "comment": "Creating myfile.txt"
+   }
+
+────────────────────────────────────────────────────────
+NON-ACTIONABLE RETURNS
+
+When actionable=false,
+generate() may return:
+
+- string
+- number
+- boolean
+- list
+- dictionary
+- nested JSON-compatible structures
+
+This information will be shown directly to the user.
+
+────────────────────────────────────────────────────────
+EXAMPLES
+
+Delete every ZIP file:
+
+{
+  "actionable": true,
+  "generatorCode": "def generate():\n    import os, glob\n    os.chdir('/storage/emulated/0')\n    files = glob.glob('/sdcard/Download/*.zip')\n    return [{'action':'delete','source':p,'destination':None,'overwrite':False,'comment':'ZIP file'} for p in files if os.path.exists(p)]",
+  "message":"Deleting every ZIP file from Downloads."
+}
+
+Create 3 empty text files:
+
+{
+  "actionable": true,
+  "generatorCode": "def generate():\n    import os\n    os.chdir('/storage/emulated/0')\n    temp_dir = '/storage/emulated/0/.tmp_aifile_gen'\n    os.makedirs(temp_dir, exist_ok=True)\n    actions = []\n    for i in range(3):\n        temp_file = os.path.join(temp_dir, f'file_{i}.txt')\n        with open(temp_file, 'w') as f:\n            pass\n        actions.append({\n            'action': 'create',\n            'source': temp_file,\n            'destination': f'/storage/emulated/0/Documents/file_{i}.txt',\n            'overwrite': False,\n            'comment': f'Creating empty file {i}'\n        })\n    return actions",
+  "message":"Creating 3 empty text files in Documents."
+}
+
+Create files with initial content:
+
+{
+  "actionable": true,
+  "generatorCode": "def generate():\n    import os\n    os.chdir('/storage/emulated/0')\n    temp_dir = '/storage/emulated/0/.tmp_aifile_gen'\n    os.makedirs(temp_dir, exist_ok=True)\n    actions = []\n    temp_file = os.path.join(temp_dir, 'notes.txt')\n    with open(temp_file, 'w') as f:\n        f.write('This is my note content.\\nLine 2.')\n    actions.append({\n        'action': 'create',\n        'source': temp_file,\n        'destination': '/storage/emulated/0/Documents/notes.txt',\n        'overwrite': False,\n        'comment': 'Creating notes.txt with content'\n    })\n    return actions",
+  "message":"Creating notes.txt with initial content."
+}
+
+Search for PDFs:
+
+{
+  "actionable": false,
+  "generatorCode": "def generate():\n    import os\n    os.chdir('/storage/emulated/0')\n    found=[]\n    for root,dirs,files in os.walk('/sdcard'):\n        for f in files:\n            if f.lower().endswith('.pdf'):\n                found.append(os.path.join(root,f))\n    return found",
+  "message":"Searching for PDF files."
+}
+
+Read a text file:
+
+{
+  "actionable": false,
+  "generatorCode": "def generate():\n    import os\n    os.chdir('/storage/emulated/0')\n    path='/sdcard/Download/notes.txt'\n    if not os.path.exists(path):\n        return 'File not found.'\n    with open(path,'r',errors='replace') as f:\n        return f.read()",
+  "message":"Reading the file."
+}
+
+Read an Excel spreadsheet:
+
+{
+  "actionable": false,
+  "generatorCode": "def generate():\n    import os\n    from openpyxl import load_workbook\n    os.chdir('/storage/emulated/0')\n    # discover workbook at runtime\n    return {'status':'example'}",
+  "message":"Reading Excel workbook."
+}
+
+Generate a chart:
+
+{
+  "actionable": false,
+  "generatorCode": "def generate():\n    import matplotlib.pyplot as plt\n    import os\n    os.chdir('/storage/emulated/0')\n    return 'Chart generation example.'",
+  "message":"Generating chart."
+}
+
+Simple conversation:
+
+{
+  "actionable": false,
+  "generatorCode": null,
+  "message":"Hello! How can I help you manage your files today?"
+}
+
+Important Notes:
+--------------------
+- You need not worry about directory creation. As long as the parent
+  folder exists, the create command automatically creates intermediate
+  directories with .mkdirs() Java function.
+- All generated operations are executed sequentially, so you can chain
+  them. For example: create a file, then move it, then delete it.
+- For the "create" action, ALWAYS generate the source file in
+  /storage/emulated/0/.tmp_aifile_gen first. Never try to "create"
+  from a non-existent source.
+""".trimIndent()
 
     private fun tryParseAIResponse(raw: String): ParsedAIResponse? {
         return try {

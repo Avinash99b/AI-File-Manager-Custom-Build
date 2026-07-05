@@ -104,8 +104,70 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+
+    implementation("io.coil-kt.coil3:coil-compose:3.5.0")
 }
 
 
 chaquopy {
+    defaultConfig {
+        pip {
+            install("requests")
+            install("numpy")
+            install("scipy")
+            install("pandas")
+            install("matplotlib")
+
+            // Image processing
+            install("Pillow")
+
+            // HTML/XML parsing
+            install("beautifulsoup4")
+            install("lxml")
+
+            // HTTP utilities
+            install("urllib3")
+            install("certifi")
+            install("idna")
+            install("charset-normalizer")
+
+            // Data formats
+            install("pyyaml")
+            install("toml")
+
+            // Excel support
+            install("openpyxl")
+
+            // PDF generation
+            install("reportlab")
+
+            // Date & time
+            install("python-dateutil")
+            install("pytz")
+
+            // Progress bars
+            install("tqdm")
+
+            // Graph algorithms
+            install("networkx")
+
+            // Symbolic mathematics
+            install("sympy")
+
+            // JSON querying
+            install("jmespath")
+
+            // File utilities
+            install("pathspec")
+
+            // Advanced regex
+            install("regex")
+
+            // Rich terminal formatting
+            install("rich")
+
+            // Version helpers
+            install("packaging")
+        }
+    }
 }
