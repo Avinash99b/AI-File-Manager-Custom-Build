@@ -161,6 +161,7 @@ fun FileManagerScreen(
                 isLoading = uiState.isChatLoading,
                 chatError = uiState.chatError,
                 pendingActions = uiState.pendingActions,
+                pendingExplanation = uiState.pendingExplanation,
                 transactionProgress = uiState.transactionProgress,
 
                 onSendMessage = { messageText ->

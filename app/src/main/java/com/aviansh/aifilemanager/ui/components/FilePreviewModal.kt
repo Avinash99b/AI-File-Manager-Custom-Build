@@ -111,6 +111,13 @@ fun FilePreviewModal(
                                 .clip(RoundedCornerShape(12.dp)),
                             contentScale = ContentScale.Fit
                         )
+                    } else if (fileItem.name.endsWith(".pdf", ignoreCase = true)) {
+                        Icon(
+                            imageVector = Icons.Default.PictureAsPdf,
+                            contentDescription = null,
+                            modifier = Modifier.size(64.dp),
+                            tint = DarkThemeColors.Error
+                        )
                     } else {
                         Icon(
                             imageVector = getFileIcon(fileItem.name),

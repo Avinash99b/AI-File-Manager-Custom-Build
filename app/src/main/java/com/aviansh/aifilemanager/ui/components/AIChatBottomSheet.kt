@@ -43,6 +43,7 @@ fun AIChatBottomSheet(
     isLoading: Boolean,
     chatError: String?,
     pendingActions: List<FileAction>?,
+    pendingExplanation: String?,
     transactionProgress: TransactionProgress,
     onSendMessage: (String) -> Unit,
     onClearChat: () -> Unit,
@@ -168,6 +169,7 @@ fun AIChatBottomSheet(
                         ChatMessageBubble(
                             message = message,
                             pendingActions = pendingActions,
+                            explanation = pendingExplanation,
                             onConfirmActions = onConfirmActions,
                             onCancelActions = onCancelActions
                         )

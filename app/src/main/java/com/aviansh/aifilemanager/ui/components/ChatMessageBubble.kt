@@ -40,6 +40,7 @@ import java.io.File
 fun ChatMessageBubble(
     message: ChatLmMessage,
     pendingActions: List<FileAction>? = null,
+    explanation: String? = null,
     onConfirmActions: (() -> Unit)? = null,
     onCancelActions: (() -> Unit)? = null
 ) {
@@ -84,6 +85,7 @@ fun ChatMessageBubble(
             Spacer(Modifier.height(6.dp))
             PendingActionsCard(
                 actions = pendingActions,
+                explanation = explanation,
                 onConfirm = onConfirmActions,
                 onCancel = onCancelActions
             )

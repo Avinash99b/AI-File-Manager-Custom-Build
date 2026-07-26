@@ -140,6 +140,7 @@ chaquopy {
 
             // PDF generation
             install("reportlab")
+            install("pypdf")
 
             // Date & time
             install("python-dateutil")

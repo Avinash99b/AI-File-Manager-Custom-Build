@@ -39,6 +39,7 @@ import java.io.File
 @Composable
 fun PendingActionsCard(
     actions: List<FileAction>,
+    explanation: String? = null,
     onConfirm: () -> Unit,
     onCancel: () -> Unit
 ) {
@@ -69,6 +70,15 @@ fun PendingActionsCard(
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
                     color = DarkThemeColors.TextPrimary
+                )
+            }
+
+            if (explanation != null) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = explanation,
+                    fontSize = 12.sp,
+                    color = DarkThemeColors.TextSecondary
                 )
             }
 

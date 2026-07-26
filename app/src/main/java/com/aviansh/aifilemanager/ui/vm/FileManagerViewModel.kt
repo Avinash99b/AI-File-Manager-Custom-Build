@@ -56,7 +56,8 @@ data class FileManagerUIState(
     val transactionProgress: TransactionProgress = TransactionProgress.Idle,
 
     // Non-null when AI has proposed actions and we're waiting for user confirmation
-    val pendingActions: List<FileAction>? = null
+    val pendingActions: List<FileAction>? = null,
+    val pendingExplanation: String? = null
 )
 
 
@@ -265,6 +266,7 @@ class FileManagerViewModel @Inject constructor(
                             chatMessages = it.chatMessages + proposalMessage,
                             isChatLoading = false,
                             pendingActions = progress.actions,
+                            pendingExplanation = aiResponse.explanation,
                             chatError = null
                         )
                     }
@@ -295,6 +297,7 @@ class FileManagerViewModel @Inject constructor(
         _uiState.update {
             it.copy(
                 pendingActions = null,
+                pendingExplanation = null,
                 transactionProgress = TransactionProgress.Running
             )
         }
@@ -338,7 +341,7 @@ class FileManagerViewModel @Inject constructor(
     }
 
     fun cancelPendingActions() {
-        _uiState.update { it.copy(pendingActions = null) }
+        _uiState.update { it.copy(pendingActions = null, pendingExplanation = null) }
         val cancelMsg = ChatLmMessage(ChatLmRole.ASSISTANT, "Cancelled — no changes were made.")
         _uiState.update { it.copy(chatMessages = it.chatMessages + cancelMsg) }
     }
@@ -565,6 +568,8 @@ THE PYTHON CODE SHOULD NEVER PERFORM WRITES IN DIR WHICH IS NOT CACHE DIR.
 ACTION SCHEMA
 
 When actionable=true, generate() must return a list of action objects.
+You MUST also provide an "explanation" string in the root JSON object,
+explaining why you are suggesting these operations to the user.
 
 Allowed actions: move, copy, delete, create
 
@@ -662,7 +667,8 @@ Delete every ZIP file:
 {
   "actionable": true,
   "generatorCode": "def generate():\n    import os, glob\n    os.chdir('/storage/emulated/0')\n    files = glob.glob('/sdcard/Download/*.zip')\n    return [{'action':'delete','source':p,'destination':None,'overwrite':False,'comment':'ZIP file'} for p in files if os.path.exists(p)]",
-  "message":"Deleting every ZIP file from Downloads."
+  "message":"Deleting every ZIP file from Downloads.",
+  "explanation": "This will remove all files ending in .zip from the Downloads directory to free up space."
 }
 
 Create 3 empty text files:
@@ -670,7 +676,8 @@ Create 3 empty text files:
 {
   "actionable": true,
   "generatorCode": "def generate():\n    import os\n    os.chdir('/storage/emulated/0')\n    temp_dir = '/storage/emulated/0/.tmp_aifile_gen'\n    os.makedirs(temp_dir, exist_ok=True)\n    actions = []\n    for i in range(3):\n        temp_file = os.path.join(temp_dir, f'file_{i}.txt')\n        with open(temp_file, 'w') as f:\n            pass\n        actions.append({\n            'action': 'create',\n            'source': temp_file,\n            'destination': f'/storage/emulated/0/Documents/file_{i}.txt',\n            'overwrite': False,\n            'comment': f'Creating empty file {i}'\n        })\n    return actions",
-  "message":"Creating 3 empty text files in Documents."
+  "message":"Creating 3 empty text files in Documents.",
+  "explanation": "Three new empty text files will be created in the Documents folder."
 }
 
 Create files with initial content:
@@ -678,7 +685,8 @@ Create files with initial content:
 {
   "actionable": true,
   "generatorCode": "def generate():\n    import os\n    os.chdir('/storage/emulated/0')\n    temp_dir = '/storage/emulated/0/.tmp_aifile_gen'\n    os.makedirs(temp_dir, exist_ok=True)\n    actions = []\n    temp_file = os.path.join(temp_dir, 'notes.txt')\n    with open(temp_file, 'w') as f:\n        f.write('This is my note content.\\nLine 2.')\n    actions.append({\n        'action': 'create',\n        'source': temp_file,\n        'destination': '/storage/emulated/0/Documents/notes.txt',\n        'overwrite': False,\n        'comment': 'Creating notes.txt with content'\n    })\n    return actions",
-  "message":"Creating notes.txt with initial content."
+  "message":"Creating notes.txt with initial content.",
+  "explanation": "A text file named notes.txt will be created with the specified content in the Documents folder."
 }
 
 Search for PDFs:
@@ -744,7 +752,8 @@ Important Notes:
             ParsedAIResponse(
                 actionable = obj.optBoolean("actionable", false),
                 generatorCode = obj.optString("generatorCode", null)?.takeIf { it != "null" },
-                message = obj.optString("message", null)
+                message = obj.optString("message", null),
+                explanation = obj.optString("explanation", null)
             )
         } catch (e: Exception) {
             Log.e(tag, "Failed to parse AI response", e)
