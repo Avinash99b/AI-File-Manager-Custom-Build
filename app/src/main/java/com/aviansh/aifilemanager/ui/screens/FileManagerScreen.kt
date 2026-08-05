@@ -1,29 +1,26 @@
 package com.aviansh.aifilemanager.ui.screens
 
 import android.content.Context
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.aviansh.aifilemanager.domain.agent.ExecutionState
 import com.aviansh.aifilemanager.domain.repository.FileRepository
-import com.aviansh.aifilemanager.ui.components.AIChatBottomSheet
+import com.aviansh.aifilemanager.ui.components.ExecutionTimeline
 import com.aviansh.aifilemanager.ui.vm.FileManagerEvent
 import com.aviansh.aifilemanager.ui.vm.FileManagerViewModel
 import kotlinx.coroutines.launch
 
-/**
- * Main File Manager Screen with:
- * - File/folder listing with delete/rename operations
- * - Navigation (up/down directory tree)
- * - Bottom sheet AI chat interface
- * - Error handling and snackbar feedback
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FileManagerScreen(
@@ -33,43 +30,35 @@ fun FileManagerScreen(
     onSettingsClick: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val timeline by viewModel.timeline.collectAsState()
+    val executionState by viewModel.executionState.collectAsState()
     val events by viewModel.events.collectAsState(null)
 
-    // Bottom sheet state
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var showChatSheet by remember { mutableStateOf(false) }
-
-    // Snackbar state
+    val sheetState = rememberBottomSheetScaffoldState(
+        bottomSheetState = rememberStandardBottomSheetState(initialValue = SheetValue.Hidden, skipHiddenState = false)
+    )
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-
-    // FileRepository for formatting utilities
     val fileRepository = FileRepository(context)
 
-    // Handle events (errors, success messages)
+    var promptText by remember { mutableStateOf("") }
+
     LaunchedEffect(events) {
         events?.let { event ->
             when (event) {
-                is FileManagerEvent.FileDeleted -> {
-                    snackbarHostState.showSnackbar("${event.fileName} deleted")
-                }
-                is FileManagerEvent.FileRenamed -> {
-                    snackbarHostState.showSnackbar("Renamed: ${event.oldName} → ${event.newName}")
-                }
-                is FileManagerEvent.TransactionComplete -> {
-                    snackbarHostState.showSnackbar("✅ ${event.actionCount} operation(s) completed")
-                }
-                is FileManagerEvent.Error -> {
-                    snackbarHostState.showSnackbar(event.message, duration = SnackbarDuration.Long)
-                }
+                is FileManagerEvent.FileDeleted -> snackbarHostState.showSnackbar("${event.fileName} deleted")
+                is FileManagerEvent.FileRenamed -> snackbarHostState.showSnackbar("Renamed: ${event.oldName} → ${event.newName}")
+                is FileManagerEvent.TransactionComplete -> snackbarHostState.showSnackbar("✅ ${event.actionCount} operation(s) completed")
+                is FileManagerEvent.Error -> snackbarHostState.showSnackbar(event.message, duration = SnackbarDuration.Long)
             }
         }
     }
 
-    Scaffold(
+    BottomSheetScaffold(
+        scaffoldState = sheetState,
         topBar = {
             TopAppBar(
-                title = { Text("File Manager") },
+                title = { Text("AI File Manager") },
                 actions = {
                     IconButton(onClick = onSettingsClick) {
                         Icon(Icons.Default.MoreVert, contentDescription = "More options")
@@ -77,114 +66,112 @@ fun FileManagerScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary
+                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
+                    actionIconContentColor = MaterialTheme.colorScheme.onPrimary
                 )
             )
         },
-
-        floatingActionButton = {
-            FloatingActionButton(
-                onClick = { showChatSheet = true },
-                containerColor = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(bottom = if (showChatSheet) 0.dp else 16.dp)
-            ) {
-                Icon(Icons.Default.Chat, contentDescription = "AI Chat")
-            }
-        },
-
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        sheetContent = {
+            Column(modifier = Modifier.fillMaxHeight(0.8f)) {
+                ExecutionTimeline(
+                    timeline = timeline,
+                    executionState = executionState,
+                    onApprovePlan = {
+                        if (executionState is ExecutionState.WaitingForApproval) {
+                            viewModel.onApprovePlan((executionState as ExecutionState.WaitingForApproval).plan)
+                        }
+                    },
+                    onSoftStop = { viewModel.onSoftStop() },
+                    onHardStop = { viewModel.onHardStop() },
+                    onApproveRepairPlan = {
+                        if (executionState is ExecutionState.WaitingForRepairApproval) {
+                            viewModel.onApproveRepairPlan((executionState as ExecutionState.WaitingForRepairApproval).repairPlan)
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                )
 
-        modifier = Modifier.fillMaxSize()
-
-    ) { padding ->
-        FileListScreen(
-            files = uiState.files,
-            currentPath = uiState.currentPath,
-            isLoading = uiState.isLoading,
-            error = uiState.error,
-            selectedFile = uiState.selectedFile,
-
-            onNavigate = { fileItem ->
-                viewModel.navigateToDirectory(fileItem)
-            },
-
-            onSelect = { fileItem ->
-                viewModel.selectFile(fileItem)
-            },
-
-            onNavigateUp = {
-                viewModel.navigateUp(context)
-            },
-
-            onDelete = { fileItem ->
-                scope.launch {
-                    val result = snackbarHostState.showSnackbar(
-                        message = "Delete ${fileItem.name}?",
-                        actionLabel = "Delete",
-                        duration = SnackbarDuration.Long
-                    )
-                    if (result == SnackbarResult.ActionPerformed) {
-                        viewModel.deleteFile(fileItem)
+                // Input field
+                Surface(tonalElevation = 8.dp) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(8.dp)
+                            .windowInsetsPadding(WindowInsets.ime),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = promptText,
+                            onValueChange = { promptText = it },
+                            modifier = Modifier.weight(1f),
+                            placeholder = { Text("What would you like to do?") },
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(onSend = {
+                                if (promptText.isNotBlank()) {
+                                    viewModel.onSubmitPrompt(promptText)
+                                    promptText = ""
+                                }
+                            }),
+                            enabled = executionState is ExecutionState.Idle || executionState is ExecutionState.Completed || executionState is ExecutionState.Failed
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        IconButton(
+                            onClick = {
+                                if (promptText.isNotBlank()) {
+                                    viewModel.onSubmitPrompt(promptText)
+                                    promptText = ""
+                                }
+                            },
+                            enabled = promptText.isNotBlank() && (executionState is ExecutionState.Idle || executionState is ExecutionState.Completed || executionState is ExecutionState.Failed)
+                        ) {
+                            Icon(Icons.Default.Send, contentDescription = "Send")
+                        }
                     }
                 }
-            },
-
-            onRename = { fileItem, newName ->
-                viewModel.renameFile(fileItem, newName)
-            },
-
-            onRetry = {
-                viewModel.loadFiles(uiState.currentPath)
-            },
-
-            getFormattedSize = { bytes ->
-                fileRepository.formatFileSize(bytes)
-            },
-
-            getFormattedDate = { millis ->
-                fileRepository.formatLastModified(millis)
-            },
-
-            modifier = Modifier.padding(padding)
-        )
-    }
-
-    // Bottom Sheet: AI Chat
-    if (showChatSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showChatSheet = false },
-            sheetState = sheetState,
-            scrimColor = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.32f),
-        ) {
-            AIChatBottomSheet(
-                messages = uiState.chatMessages,
-                isLoading = uiState.isChatLoading,
-                chatError = uiState.chatError,
-                pendingActions = uiState.pendingActions,
-                transactionProgress = uiState.transactionProgress,
-
-                onSendMessage = { messageText ->
-                    viewModel.sendChatMessage(messageText)
+            }
+        },
+        sheetPeekHeight = 0.dp
+    ) { padding ->
+        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            FileListScreen(
+                files = uiState.files,
+                currentPath = uiState.currentPath,
+                isLoading = uiState.isLoading,
+                error = uiState.error,
+                selectedFile = uiState.selectedFile,
+                onNavigate = { viewModel.navigateToDirectory(it) },
+                onSelect = { viewModel.selectFile(it) },
+                onNavigateUp = { viewModel.navigateUp(context) },
+                onDelete = { fileItem ->
+                    scope.launch {
+                        val result = snackbarHostState.showSnackbar("Delete ${fileItem.name}?", actionLabel = "Delete", duration = SnackbarDuration.Long)
+                        if (result == SnackbarResult.ActionPerformed) viewModel.deleteFile(fileItem)
+                    }
                 },
-
-                onClearChat = {
-                    viewModel.clearChat()
-                },
-
-                onConfirmActions = {
-                    viewModel.confirmPendingActions()
-                },
-
-                onCancelActions = {
-                    viewModel.cancelPendingActions()
-                },
-
-                onDismissProgress = {
-                    viewModel.clearTransactionProgress()
-                },
-
-                sheetState = sheetState,
+                onRename = { fileItem, newName -> viewModel.renameFile(fileItem, newName) },
+                onRetry = { viewModel.loadFiles(uiState.currentPath) },
+                getFormattedSize = { fileRepository.formatFileSize(it) },
+                getFormattedDate = { fileRepository.formatLastModified(it) }
             )
+
+            FloatingActionButton(
+                onClick = {
+                    scope.launch {
+                        if (sheetState.bottomSheetState.isVisible) {
+                            sheetState.bottomSheetState.hide()
+                        } else {
+                            sheetState.bottomSheetState.expand()
+                        }
+                    }
+                },
+                containerColor = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .padding(16.dp)
+                    .align(androidx.compose.ui.Alignment.BottomEnd)
+            ) {
+                Icon(Icons.Default.Chat, contentDescription = "Agent Chat")
+            }
         }
     }
 }

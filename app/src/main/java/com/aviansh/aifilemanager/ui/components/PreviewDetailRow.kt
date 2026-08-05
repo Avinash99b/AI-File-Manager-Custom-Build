@@ -30,7 +30,7 @@ import androidx.wear.compose.material3.TextButton
 import androidx.wear.compose.material3.TextButtonColors
 import com.aviansh.aifilemanager.domain.data.ChatLmMessage
 import com.aviansh.aifilemanager.domain.data.FileAction
-import com.aviansh.aifilemanager.domain.data.TransactionProgress
+
 import com.aviansh.aifilemanager.domain.repository.FileItem
 import com.aviansh.aifilemanager.ui.screens.DarkThemeColors
 
