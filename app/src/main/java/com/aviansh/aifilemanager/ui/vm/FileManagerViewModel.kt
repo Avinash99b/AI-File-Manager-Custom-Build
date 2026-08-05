@@ -273,4 +273,15 @@ class FileManagerViewModel @Inject constructor(
             _executionState.value = ExecutionState.Idle
         }
     }
+
+    fun onClearSession() {
+        currentAgentJob?.cancel()
+        viewModelScope.launch {
+            currentWorkspacePath?.let { workspaceEngine.cleanupWorkspace(it) }
+            currentWorkspacePath = null
+            _timeline.value = emptyList()
+            chatHistory.clear()
+            _executionState.value = ExecutionState.Idle
+        }
+    }
 }

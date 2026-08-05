@@ -6,6 +6,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
@@ -101,6 +102,11 @@ fun FileManagerScreen(
                             .windowInsetsPadding(WindowInsets.ime),
                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
                     ) {
+                        IconButton(
+                            onClick = { viewModel.onClearSession() }
+                        ) {
+                            Icon(Icons.Default.DeleteSweep, contentDescription = "Clear Session", tint = MaterialTheme.colorScheme.error)
+                        }
                         OutlinedTextField(
                             value = promptText,
                             onValueChange = { promptText = it },
@@ -158,7 +164,7 @@ fun FileManagerScreen(
             FloatingActionButton(
                 onClick = {
                     scope.launch {
-                        if (sheetState.bottomSheetState.isVisible) {
+                        if (sheetState.bottomSheetState.currentValue == SheetValue.Expanded) {
                             sheetState.bottomSheetState.hide()
                         } else {
                             sheetState.bottomSheetState.expand()
