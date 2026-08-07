@@ -57,10 +57,11 @@ os.chdir("$workspaceDir")
         val setupCode = if (workspaceDir != null) {
             """
 import os
+import json
 os.chdir("$workspaceDir")
             """.trimIndent()
         } else {
-            ""
+            "import json\n"
         }
 
         val fullCode = setupCode + "\n" + code
@@ -71,7 +72,10 @@ os.chdir("$workspaceDir")
             ?: throw IllegalStateException("generate() not found in provided code")
 
         val result: PyObject = generator.call()
-        return result.toString()
+
+        // Ensure strictly formatted JSON is returned rather than Python dict strings
+        val jsonModule = py.getModule("json")
+        return jsonModule.callAttr("dumps", result).toString()
     }
 
     fun generateMessage(generatorCode: String): String = executeGeneratorCode(generatorCode)
