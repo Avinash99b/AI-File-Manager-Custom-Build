@@ -142,6 +142,9 @@ chaquopy {
             // PDF generation
             install("reportlab")
 
+            // PDF reading, merging, splitting, rotating, encrypting
+            install("pypdf")
+
             // Date & time
             install("python-dateutil")
             install("pytz")

@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aviansh.aifilemanager.domain.agent.*
 import com.aviansh.aifilemanager.domain.data.ChatLmMessage
+import com.aviansh.aifilemanager.domain.data.ChatLmRole
 import com.aviansh.aifilemanager.domain.repository.FileItem
 import com.aviansh.aifilemanager.domain.repository.FileRepository
 import com.aviansh.aifilemanager.domain.repository.GeminiModelRepository
@@ -32,6 +33,12 @@ data class FileManagerUIState(
     val error: String? = null,
     val selectedFile: FileItem? = null
 )
+
+private fun <T> MutableList<T>.trimToLast(maxSize: Int) {
+    if (size > maxSize) {
+        subList(0, size - maxSize).clear()
+    }
+}
 
 @HiltViewModel
 class FileManagerViewModel @Inject constructor(
@@ -60,6 +67,10 @@ class FileManagerViewModel @Inject constructor(
 
     // Simple chat history just to provide context to the agent
     private val chatHistory = mutableListOf<ChatLmMessage>()
+
+    companion object {
+        private const val MAX_CHAT_HISTORY = 20
+    }
 
     init {
         loadFiles(_uiState.value.currentPath)
@@ -161,16 +172,22 @@ class FileManagerViewModel @Inject constructor(
             }
 
             result.onSuccess { plan ->
+                val explanation = plan?.explanation ?: "No action needed."
+                chatHistory.add(ChatLmMessage(ChatLmRole.USER, prompt))
+                chatHistory.add(ChatLmMessage(ChatLmRole.ASSISTANT, explanation))
+                chatHistory.trimToLast(MAX_CHAT_HISTORY)
+
                 if (plan != null && plan.actions.isNotEmpty()) {
                     _timeline.update { it + TimelineEvent.ProposedPlan(plan) }
                     _executionState.value = ExecutionState.WaitingForApproval(plan)
                 } else {
-                    _timeline.update { it + TimelineEvent.SystemMessage(plan?.explanation ?: "No action needed.") }
+                    _timeline.update { it + TimelineEvent.SystemMessage(explanation) }
                     _executionState.value = ExecutionState.Completed
                     workspaceEngine.cleanupWorkspace(workspacePath)
                 }
             }.onFailure { e ->
                 if (e is kotlinx.coroutines.CancellationException) throw e
+                chatHistory.add(ChatLmMessage(ChatLmRole.USER, prompt))
                 _timeline.update { it + TimelineEvent.ExecutionLog("Planning failed: ${e.message}", true) }
                 _executionState.value = ExecutionState.Failed(e.message ?: "Unknown error")
                 workspaceEngine.cleanupWorkspace(workspacePath)

@@ -101,7 +101,14 @@ os.chdir("$workspaceDir")
                 sourcePath = obj.getString("source"),
                 destinationPath = if (obj.has("destination")) obj.getString("destination") else null,
                 overwrite = obj.optBoolean("overwrite", false)
-            )
+            ).also { action ->
+                if (action.destinationPath.isNullOrBlank() && type != FileActionType.DELETE) {
+                    throw IllegalArgumentException(
+                        "Action of type ${obj.getString("action")} requires a non-null 'destination' " +
+                            "(got: ${obj.toString()})"
+                    )
+                }
+            }
         }
     }
 }
