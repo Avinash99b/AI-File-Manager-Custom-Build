@@ -100,6 +100,7 @@ dependencies {
 
     // Unit & Android Tests
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.11.1")
     androidTestImplementation(platform("androidx.compose:compose-bom:2025.06.01"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
@@ -140,6 +141,9 @@ chaquopy {
 
             // PDF generation
             install("reportlab")
+
+            // PDF reading, merging, splitting, rotating, encrypting
+            install("pypdf")
 
             // Date & time
             install("python-dateutil")

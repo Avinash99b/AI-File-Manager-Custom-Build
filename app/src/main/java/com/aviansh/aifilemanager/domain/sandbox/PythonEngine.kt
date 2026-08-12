@@ -10,47 +10,80 @@ import org.json.JSONArray
 object PythonEngine {
 
     /**
-     * Executes arbitrary generator code.
-     *
-     * The code MUST define:
-     *   def generate():
-     *     ...
-     *
-     * Returns the JSON string produced by generate().
+     * Executes arbitrary python code and returns its stdout.
      */
-    fun executeCode(code: String): String {
+    fun executeArbitraryCode(code: String, workspaceDir: String? = null): String {
+        val py = Python.getInstance()
+        val builtins = py.getModule("builtins")
+        val sys = py.getModule("sys")
+        val io = py.getModule("io")
+
+        val globalsDict: PyObject = builtins.callAttr("dict")
+
+        val setupCode = if (workspaceDir != null) {
+            """
+import os
+os.chdir("$workspaceDir")
+            """.trimIndent()
+        } else {
+            ""
+        }
+
+        // Redirect stdout
+        val stringIo = io.callAttr("StringIO")
+        val oldStdout = sys.get("stdout")
+        sys.put("stdout", stringIo)
+
+        return try {
+            builtins.callAttr("exec", setupCode + "\n" + code, globalsDict)
+            stringIo.callAttr("getvalue").toString()
+        } catch (e: Exception) {
+            "Execution Error: ${e.message}\n" + stringIo.callAttr("getvalue").toString()
+        } finally {
+            sys.put("stdout", oldStdout)
+            stringIo.callAttr("close")
+        }
+    }
+
+    /**
+     * Executes generator code expecting a generate() function that returns a JSON string.
+     */
+    fun executeGeneratorCode(code: String, workspaceDir: String? = null): String {
         val py = Python.getInstance()
         val builtins = py.getModule("builtins")
 
-        // exec() requires a plain dict as globals, not a module object.
-        // We create one via builtins.dict() so Chaquopy is happy.
         val globalsDict: PyObject = builtins.callAttr("dict")
 
-        builtins.callAttr("exec", code, globalsDict)
+        val setupCode = if (workspaceDir != null) {
+            """
+import os
+import json
+os.chdir("$workspaceDir")
+            """.trimIndent()
+        } else {
+            "import json\n"
+        }
+
+        val fullCode = setupCode + "\n" + code
+
+        builtins.callAttr("exec", fullCode, globalsDict)
 
         val generator = globalsDict.callAttr("get", "generate")
             ?: throw IllegalStateException("generate() not found in provided code")
 
         val result: PyObject = generator.call()
-        return result.toString()
+
+        // Ensure strictly formatted JSON is returned rather than Python dict strings
+        val jsonModule = py.getModule("json")
+        return jsonModule.callAttr("dumps", result).toString()
     }
 
-    fun generateMessage(generatorCode: String): String = executeCode(generatorCode)
+    fun generateMessage(generatorCode: String): String = executeGeneratorCode(generatorCode)
 
-    /**
-     * Runs [generatorCode] and parses the resulting JSON array into [FileAction]s.
-     *
-     * Expected JSON schema per element:
-     * {
-     *   "action": "move" | "copy" | "delete" | "create",
-     *   "source": "<absolute path>",
-     *   "destination": "<absolute path>"   // optional for delete
-     * }
-     */
-    fun generateActions(generatorCode: String): List<FileAction> {
-        val json = executeCode(generatorCode)
+    fun generateActions(generatorCode: String, workspaceDir: String? = null): List<FileAction> {
+        val json = executeGeneratorCode(generatorCode, workspaceDir)
 
-        Log.e("AIOrchestrationEngineActions", json)
+        Log.d("PythonEngine", "Actions JSON: $json")
         val arr = JSONArray(json)
         return (0 until arr.length()).map { i ->
             val obj = arr.getJSONObject(i)
@@ -67,8 +100,15 @@ object PythonEngine {
                 type = type,
                 sourcePath = obj.getString("source"),
                 destinationPath = if (obj.has("destination")) obj.getString("destination") else null,
-                overwrite = obj.getBoolean("overwrite")
-            )
+                overwrite = obj.optBoolean("overwrite", false)
+            ).also { action ->
+                if (action.destinationPath.isNullOrBlank() && type != FileActionType.DELETE) {
+                    throw IllegalArgumentException(
+                        "Action of type ${obj.getString("action")} requires a non-null 'destination' " +
+                            "(got: ${obj.toString()})"
+                    )
+                }
+            }
         }
     }
 }
