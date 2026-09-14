@@ -237,6 +237,88 @@ class FileRepository(private val context: Context) {
                 Result.failure(e)
             }
         }
+
+    /**
+     * Create a new folder inside the specified parent directory.
+     */
+    suspend fun createFolder(parentDirPath: String, folderName: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            try {
+                val parentDir = File(parentDirPath)
+                if (!parentDir.exists() || !parentDir.isDirectory) {
+                    return@withContext Result.failure(Exception("Target parent directory is invalid: $parentDirPath"))
+                }
+                val cleanName = folderName.trim()
+                if (cleanName.isBlank() || cleanName.contains("/")) {
+                    return@withContext Result.failure(Exception("Invalid folder name: $folderName"))
+                }
+                val newFolder = File(parentDir, cleanName)
+                if (newFolder.exists()) {
+                    return@withContext Result.failure(Exception("Folder already exists: $cleanName"))
+                }
+                if (newFolder.mkdirs()) {
+                    Log.d(tag, "Created folder: ${newFolder.absolutePath}")
+                    Result.success(newFolder.absolutePath)
+                } else {
+                    Result.failure(Exception("Failed to create folder: $cleanName"))
+                }
+            } catch (e: Exception) {
+                Log.e(tag, "Error creating folder $folderName in $parentDirPath", e)
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Copy or move multiple files into the target directory.
+     */
+    suspend fun copyOrMoveFiles(
+        sourcePaths: List<String>,
+        targetDirPath: String,
+        isCut: Boolean
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val targetDir = File(targetDirPath)
+            if (!targetDir.exists() || !targetDir.isDirectory) {
+                return@withContext Result.failure(Exception("Target directory is invalid: $targetDirPath"))
+            }
+
+            var processedCount = 0
+            for (srcPath in sourcePaths) {
+                val srcFile = File(srcPath)
+                if (!srcFile.exists()) continue
+
+                val destFile = File(targetDir, srcFile.name)
+
+                val srcCanonical = try { srcFile.canonicalPath } catch (_: Exception) { srcFile.absolutePath }
+                val destCanonical = try { destFile.canonicalPath } catch (_: Exception) { destFile.absolutePath }
+
+                if (srcCanonical == destCanonical) {
+                    // Same path: skip to prevent overwriting or corrupting file
+                    continue
+                }
+                if (srcFile.isDirectory && destCanonical.startsWith(srcCanonical + File.separator)) {
+                    // Subdirectory of itself: skip
+                    continue
+                }
+
+                if (isCut) {
+                    com.aviansh.aifilemanager.domain.engines.FileEngine.moveFile(srcFile, destFile, overwrite = true)
+                } else {
+                    if (srcFile.isDirectory) {
+                        com.aviansh.aifilemanager.domain.engines.FileEngine.copyRecursively(srcFile, destFile, overwrite = true)
+                    } else {
+                        com.aviansh.aifilemanager.domain.engines.FileEngine.copyFile(srcFile, destFile)
+                    }
+                }
+                processedCount++
+            }
+
+            Result.success(processedCount)
+        } catch (e: Exception) {
+            Log.e(tag, "Error copying/moving files into $targetDirPath", e)
+            Result.failure(e)
+        }
+    }
 }
 
 data class FileDetails(

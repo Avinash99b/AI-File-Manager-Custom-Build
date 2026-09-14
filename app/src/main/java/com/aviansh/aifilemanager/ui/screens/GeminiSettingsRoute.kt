@@ -283,16 +283,19 @@ class GeminiSettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isTesting = true, connectionResult = null) }
             try {
-                val provider = repository.getProvider()
+                val provider = com.aviansh.aifilemanager.domain.ai.providers.GeminiAIProvider(
+                    apiKey = apiKey,
+                    modelName = modelName
+                )
 
-                val success = provider?.test()
+                val success = provider.test()
                 _uiState.update {
                     it.copy(
                         isTesting = false,
-                        connectionResult = if (success == true) "Connection successful." else "Connection failed."
+                        connectionResult = if (success) "Connection successful." else "Connection failed."
                     )
                 }
-                emitSnackbar(if (success == true) "Gemini connection looks good." else "Gemini test failed.")
+                emitSnackbar(if (success) "Gemini connection looks good." else "Gemini test failed.")
             } catch (e: Exception) {
                 e.printStackTrace()
                 _uiState.update {

@@ -1,8 +1,9 @@
 package com.aviansh.aifilemanager.domain
 
 import android.content.Context
-import com.aviansh.aifilemanager.domain.ai.providers.GeminiAIProvider
 import com.aviansh.aifilemanager.domain.repository.FileRepository
+import com.aviansh.aifilemanager.domain.security.AndroidKeystoreSecretStore
+import com.aviansh.aifilemanager.domain.security.SecretStore
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -22,4 +23,11 @@ object AppModule {
         return FileRepository(context)
     }
 
+    @Provides
+    @Singleton
+    fun provideSecretStore(
+        @ApplicationContext context: Context
+    ): SecretStore {
+        return AndroidKeystoreSecretStore(context)
+    }
 }

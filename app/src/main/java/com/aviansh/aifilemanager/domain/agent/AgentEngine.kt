@@ -1,19 +1,20 @@
 package com.aviansh.aifilemanager.domain.agent
 
 import android.util.Log
+import com.aviansh.aifilemanager.domain.agent.tools.PythonTool
 import com.aviansh.aifilemanager.domain.ai.LLMGenerationResponse
 import com.aviansh.aifilemanager.domain.ai.LLMProvider
 import com.aviansh.aifilemanager.domain.data.ChatLmMessage
 import com.aviansh.aifilemanager.domain.data.ChatLmRole
 import com.aviansh.aifilemanager.domain.data.FileAction
-import com.aviansh.aifilemanager.domain.agent.tools.PythonTool
 import com.aviansh.aifilemanager.domain.engines.PythonEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 class AgentEngine(
-    private val llmProvider: LLMProvider
+    private val llmProvider: LLMProvider,
+    private val customToolRegistry: ToolRegistry? = null
 ) {
 
     private val tag = "AgentEngine"
@@ -27,7 +28,7 @@ class AgentEngine(
 
         Log.d(tag, "Processing prompt: ${prompt.take(50)}...")
 
-        val pythonTool = PythonTool(workspacePath)
+        val toolRegistry = customToolRegistry ?: ToolRegistry(listOf(PythonTool(workspacePath)))
 
         val systemPrompt = """
 You are an AI File Management Agent. You operate in an isolated workspace.
@@ -59,15 +60,13 @@ Reading a PDF is READ-ONLY. Any PDF you generate must be written into the worksp
 To process the user request, you can use the following tools by responding with a JSON tool call:
 
 TOOLS:
-1. ${pythonTool.name}:
-   Description: ${pythonTool.description}
-   Input: A string containing the python script to run.
+${toolRegistry.describeTools()}
 
 To call a tool, your response MUST be exactly this JSON and nothing else:
 {
   "type": "tool_call",
-  "tool": "PythonExecutor",
-  "args": "your python code as a string"
+  "tool": "ToolName",
+  "args": "your python code or input string"
 }
 
 You can call tools repeatedly to explore the filesystem, read files, or generate data.
@@ -96,9 +95,6 @@ Action Schema:
   "overwrite": false
 }
 
-Example: convert an image in the workspace and place it at its real destination:
-{"action":"create","source":"/data/user/0/com.aviansh.aifilemanager/files/workspace_xxx/image-2.png","destination":"/storage/emulated/0/Download/tmp/image-2.png","overwrite":true}
-
 If no action is needed (e.g., you just answered a question), return:
 {
   "type": "final_plan",
@@ -118,7 +114,7 @@ If no action is needed (e.g., you just answered a question), return:
             Log.d(tag, "ReAct Loop Iteration $iterations")
 
             val response = llmProvider.generate(
-                prompt = currentContext.last().content, // LLMProvider impl in this app usually appends the context itself, we just need to pass the latest or prompt
+                prompt = currentContext.last().content,
                 systemPrompt = systemPrompt,
                 conversation = currentContext.dropLast(1)
             )
@@ -139,14 +135,16 @@ If no action is needed (e.g., you just answered a question), return:
                             Log.d(tag, "Agent called tool: $toolName")
                             currentContext.add(ChatLmMessage(ChatLmRole.ASSISTANT, jsonStr))
 
-                            if (toolName == pythonTool.name) {
-                                val result = pythonTool.execute(args)
+                            val tool = toolRegistry.find(toolName)
+                            if (tool != null) {
+                                val result = tool.execute(args)
                                 Log.d(tag, "Tool result: ${result.take(100)}...")
-                                currentContext.add(ChatLmMessage(ChatLmRole.USER, "Tool Result:\n$result"))
+                                currentContext.add(ChatLmMessage(ChatLmRole.USER, "[UNTRUSTED DATA FROM TOOL $toolName]:\n$result"))
                                 onEvent(TimelineEvent.ToolCall(toolName, args, result))
                             } else {
-                                currentContext.add(ChatLmMessage(ChatLmRole.USER, "Error: Unknown tool $toolName"))
-                                onEvent(TimelineEvent.ToolCall(toolName, args, error = "Unknown tool"))
+                                val errMsg = "Error: Unknown tool $toolName"
+                                currentContext.add(ChatLmMessage(ChatLmRole.USER, errMsg))
+                                onEvent(TimelineEvent.ToolCall(toolName, args, error = errMsg))
                             }
                         } else if (type == "final_plan") {
                             onEvent(TimelineEvent.AgentThought("Ready to propose final plan."))
@@ -155,15 +153,19 @@ If no action is needed (e.g., you just answered a question), return:
 
                             if (actionable) {
                                 val code = jsonObj.getString("generatorCode")
-                                val actions = PythonEngine.generateActions(code, workspacePath)
+                                val actions = try {
+                                    PythonEngine.generateActions(code, workspacePath)
+                                } catch (e: Exception) {
+                                    Log.e(tag, "Failed to execute generator code in final_plan", e)
+                                    return@withContext Result.failure(Exception("Generator code execution failed: ${e.message}", e))
+                                }
                                 return@withContext Result.success(ExecutionPlan(actions, explanation))
                             } else {
                                 return@withContext Result.success(ExecutionPlan(emptyList(), explanation))
                             }
                         } else {
-                             // Fallback if the model didn't format correctly
-                             currentContext.add(ChatLmMessage(ChatLmRole.ASSISTANT, jsonStr))
-                             currentContext.add(ChatLmMessage(ChatLmRole.USER, "Error: Response must be a JSON object with 'type' equal to 'tool_call' or 'final_plan'."))
+                            currentContext.add(ChatLmMessage(ChatLmRole.ASSISTANT, jsonStr))
+                            currentContext.add(ChatLmMessage(ChatLmRole.USER, "Error: Response must be a JSON object with 'type' equal to 'tool_call' or 'final_plan'."))
                         }
 
                     } catch (e: Exception) {
@@ -186,50 +188,27 @@ If no action is needed (e.g., you just answered a question), return:
         errorLog: String,
         workspacePath: String
     ): Result<RepairPlan?> = withContext(Dispatchers.IO) {
-        // Simple repair implementation for now without a full loop.
         val prompt = """
-The previous execution plan failed.
-Error log: $errorLog
+The previous execution plan failed with error:
+$errorLog
 
 Failed Actions:
-${failedActions.joinToString("\n") { it.toString() }}
+${failedActions.joinToString("\n") { "${it.type}: ${it.sourcePath} -> ${it.destinationPath}" }}
 
-Generate a new JSON response with `actionable: true` that fixes these issues, or `actionable: false` if it cannot be fixed automatically.
-Use the `final_plan` format as specified in the system prompt.
+Please propose a repaired plan using the final_plan format. Ensure your repair stays within the authorized workspace ($workspacePath) and does not expand path authority beyond the user's intent.
 """.trimIndent()
 
-        val dummyTool = PythonTool(workspacePath) // just for prompt format
-        val minimalPrompt = "Use the final_plan JSON format."
-
-        val response = llmProvider.generate(
-            prompt = prompt,
-            systemPrompt = minimalPrompt, // reusing minimal for repair
-            conversation = emptyList()
-        )
-
-        when (response) {
-             is LLMGenerationResponse.SUCCESS -> {
-                try {
-                    val rawText = response.message
-                    val jsonStr = rawText.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-                    val jsonObj = JSONObject(jsonStr)
-
-                    val actionable = jsonObj.optBoolean("actionable", false)
-                    val explanation = jsonObj.optString("explanation", "No explanation provided.")
-
-                    if (actionable) {
-                        val code = jsonObj.getString("generatorCode")
-                        val proposedFixes = PythonEngine.generateActions(code, workspacePath)
-                        Result.success(RepairPlan(failedActions, proposedFixes, explanation))
-                    } else {
-                        Result.success(null) // Could not generate a repair
-                    }
-                } catch (e: Exception) {
-                    Result.failure(e)
+        val result = processPrompt(prompt, workspacePath, emptyList())
+        result.mapCatching { plan ->
+            if (plan != null && plan.actions.isNotEmpty()) {
+                // Preflight validation pass to ensure repair does not gain broader authority
+                val preflight = WorkspaceEngine().preflight(plan.actions)
+                if (!preflight.isValid) {
+                    throw IllegalArgumentException("Repair plan rejected due to policy validation: " + preflight.validationErrors.joinToString("; "))
                 }
-            }
-            is LLMGenerationResponse.FAILURE -> {
-                Result.failure(Exception(response.error))
+                RepairPlan(failedActions, plan.actions, plan.explanation)
+            } else {
+                null
             }
         }
     }

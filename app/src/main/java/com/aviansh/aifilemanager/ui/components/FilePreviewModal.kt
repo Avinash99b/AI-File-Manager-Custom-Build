@@ -1,40 +1,24 @@
 package com.aviansh.aifilemanager.ui.components
-import androidx.compose.animation.*
-import androidx.compose.foundation.BorderStroke
+
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.wear.compose.material3.TextButton
-import androidx.wear.compose.material3.TextButtonColors
 import coil3.compose.AsyncImage
-import com.aviansh.aifilemanager.domain.data.ChatLmMessage
-import com.aviansh.aifilemanager.domain.data.FileAction
-
 import com.aviansh.aifilemanager.domain.repository.FileItem
-import com.aviansh.aifilemanager.ui.screens.DarkThemeColors
 import com.aviansh.aifilemanager.ui.screens.getFileIcon
 import com.aviansh.aifilemanager.ui.screens.getFileType
 import com.aviansh.aifilemanager.ui.screens.getFormattedDateForPreview
@@ -54,7 +38,7 @@ fun FilePreviewModal(
         modifier = Modifier
             .fillMaxWidth(0.95f)
             .clip(RoundedCornerShape(16.dp)),
-        containerColor = DarkThemeColors.SurfaceLight,
+        containerColor = MaterialTheme.colorScheme.surfaceVariant,
         title = {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -63,7 +47,7 @@ fun FilePreviewModal(
             ) {
                 Text(
                     text = fileItem.name,
-                    color = DarkThemeColors.TextPrimary,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -73,12 +57,12 @@ fun FilePreviewModal(
 
                 IconButton(
                     onClick = onDismiss,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
-                        contentDescription = "Close",
-                        tint = DarkThemeColors.TextSecondary
+                        contentDescription = "Close preview",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -89,19 +73,17 @@ fun FilePreviewModal(
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
             ) {
-
                 // Preview Area
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(180.dp)
                         .background(
-                            DarkThemeColors.Surface,
+                            MaterialTheme.colorScheme.surface,
                             RoundedCornerShape(12.dp)
                         ),
                     contentAlignment = Alignment.Center
                 ) {
-
                     if (isFileImage(fileItem.name)) {
                         AsyncImage(
                             model = File(fileItem.path),
@@ -116,44 +98,25 @@ fun FilePreviewModal(
                             imageVector = getFileIcon(fileItem.name),
                             contentDescription = null,
                             modifier = Modifier.size(64.dp),
-                            tint = DarkThemeColors.Primary
+                            tint = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                PreviewDetailRow(
-                    "Name",
-                    fileItem.name
-                )
-
-                PreviewDetailRow(
-                    "Size",
-                    getFormattedSizeForPreview(fileItem.size)
-                )
-
-                PreviewDetailRow(
-                    "Type",
-                    getFileType(fileItem.name)
-                )
-
-                PreviewDetailRow(
-                    "Path",
-                    fileItem.path
-                )
-
-                PreviewDetailRow(
-                    "Modified",
-                    getFormattedDateForPreview(fileItem.lastModified)
-                )
+                PreviewDetailRow("Name", fileItem.name)
+                PreviewDetailRow("Size", getFormattedSizeForPreview(fileItem.size))
+                PreviewDetailRow("Type", getFileType(fileItem.name))
+                PreviewDetailRow("Path", fileItem.path)
+                PreviewDetailRow("Modified", getFormattedDateForPreview(fileItem.lastModified))
 
                 Spacer(modifier = Modifier.height(16.dp))
 
                 if (isTextFile(fileItem.name)) {
                     Text(
                         text = "Content Preview",
-                        color = DarkThemeColors.TextPrimary,
+                        color = MaterialTheme.colorScheme.onSurface,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(vertical = 8.dp)
@@ -166,8 +129,9 @@ fun FilePreviewModal(
         confirmButton = {
             Button(
                 onClick = onDismiss,
+                modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = DarkThemeColors.Primary
+                    containerColor = MaterialTheme.colorScheme.primary
                 )
             ) {
                 Text("Close")

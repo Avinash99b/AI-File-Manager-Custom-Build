@@ -1,47 +1,35 @@
 package com.aviansh.aifilemanager.ui.components
 
-import androidx.compose.animation.*
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.wear.compose.material3.TextButton
-import androidx.wear.compose.material3.TextButtonColors
-import com.aviansh.aifilemanager.domain.data.ChatLmMessage
-import com.aviansh.aifilemanager.domain.data.FileAction
-
 import com.aviansh.aifilemanager.domain.repository.FileItem
-import com.aviansh.aifilemanager.ui.data.ProgressQuad
-import com.aviansh.aifilemanager.ui.screens.DarkThemeColors
 import com.aviansh.aifilemanager.ui.screens.getFileIcon
+import com.aviansh.aifilemanager.ui.screens.getFileType
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FileListItem(
     fileItem: FileItem,
+    isSelected: Boolean = false,
+    isSelectionMode: Boolean = false,
     onNavigate: (FileItem) -> Unit,
     onSelect: (FileItem) -> Unit,
+    onToggleSelect: (FileItem) -> Unit = {},
+    onLongClickSelect: (FileItem) -> Unit = {},
     onDelete: (FileItem) -> Unit,
     onRename: (FileItem, String) -> Unit,
     getFormattedSize: (Long) -> String,
@@ -50,61 +38,85 @@ fun FileListItem(
 ) {
     var showMenu by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
+    var showPropertiesDialog by remember { mutableStateOf(false) }
     var renameInput by remember { mutableStateOf(fileItem.name) }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp, horizontal = 12.dp)
+            .padding(vertical = 4.dp, horizontal = 12.dp)
             .clip(RoundedCornerShape(12.dp))
-            .clickable {
-                onSelect(fileItem)
-                if (fileItem.isDirectory) {
-                    onNavigate(fileItem)
-                } else {
-                    onPreview(fileItem)
+            .combinedClickable(
+                onClick = {
+                    if (isSelectionMode) {
+                        onToggleSelect(fileItem)
+                    } else {
+                        onSelect(fileItem)
+                        if (fileItem.isDirectory) {
+                            onNavigate(fileItem)
+                        } else {
+                            onPreview(fileItem)
+                        }
+                    }
+                },
+                onLongClick = {
+                    onLongClickSelect(fileItem)
                 }
-            },
-        colors = CardDefaults.cardColors(containerColor = DarkThemeColors.Surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+            ),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected)
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+            else
+                MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isSelected) 4.dp else 1.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(
                 modifier = Modifier.weight(1f),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // File Icon
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(
-                            if (fileItem.isDirectory)
-                                DarkThemeColors.Primary.copy(alpha = 0.2f)
-                            else
-                                DarkThemeColors.Accent.copy(alpha = 0.2f)
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = if (fileItem.isDirectory)
-                            Icons.Default.Folder
-                        else
-                            getFileIcon(fileItem.name),
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp),
-                        tint = if (fileItem.isDirectory)
-                            DarkThemeColors.Primary
-                        else
-                            DarkThemeColors.Accent
+                // Multi-select Checkbox if in selection mode or selected
+                if (isSelectionMode || isSelected) {
+                    Checkbox(
+                        checked = isSelected,
+                        onCheckedChange = { onToggleSelect(fileItem) },
+                        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                     )
+                } else {
+                    // File Icon
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                if (fileItem.isDirectory)
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                else
+                                    MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (fileItem.isDirectory)
+                                Icons.Default.Folder
+                            else
+                                getFileIcon(fileItem.name),
+                            contentDescription = if (fileItem.isDirectory) "Folder icon" else "File icon",
+                            modifier = Modifier.size(24.dp),
+                            tint = if (fileItem.isDirectory)
+                                MaterialTheme.colorScheme.primary
+                            else
+                                MaterialTheme.colorScheme.tertiary
+                        )
+                    }
                 }
 
                 // File Info
@@ -113,7 +125,7 @@ fun FileListItem(
                         text = fileItem.name,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = DarkThemeColors.TextPrimary,
+                        color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -125,74 +137,74 @@ fun FileListItem(
                             Text(
                                 getFormattedSize(fileItem.size),
                                 fontSize = 12.sp,
-                                color = DarkThemeColors.TextTertiary
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Text("·", fontSize = 12.sp, color = DarkThemeColors.TextTertiary)
+                            Text("·", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Text(
                             getFormattedDate(fileItem.lastModified),
                             fontSize = 12.sp,
-                            color = DarkThemeColors.TextTertiary,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1
                         )
                     }
                 }
             }
 
-            // Menu Button
+            // Options menu button
             Box {
                 IconButton(
                     onClick = { showMenu = true },
-                    modifier = Modifier.size(40.dp)
+                    modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                 ) {
                     Icon(
                         Icons.Default.MoreVert,
-                        contentDescription = "Options",
-                        tint = DarkThemeColors.TextSecondary,
+                        contentDescription = "File Options",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(20.dp)
                     )
                 }
 
-                // Fixed Dropdown Menu with proper positioning
                 DropdownMenu(
                     expanded = showMenu,
                     onDismissRequest = { showMenu = false },
-                    modifier = Modifier.background(DarkThemeColors.SurfaceLight)
+                    modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
                 ) {
                     DropdownMenuItem(
-                        text = { Text("Rename", color = DarkThemeColors.TextPrimary) },
+                        text = { Text("Rename", color = MaterialTheme.colorScheme.onSurface) },
                         onClick = { showMenu = false; showRenameDialog = true },
                         leadingIcon = {
                             Icon(
                                 Icons.Default.Edit,
-                                contentDescription = null,
-                                tint = DarkThemeColors.Primary
+                                contentDescription = "Rename icon",
+                                tint = MaterialTheme.colorScheme.primary
                             )
-                        }
+                        },
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp)
                     )
-                    if (fileItem.isDirectory) {
-                        DropdownMenuItem(
-                            text = { Text("Properties", color = DarkThemeColors.TextPrimary) },
-                            onClick = { showMenu = false },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Default.Info,
-                                    contentDescription = null,
-                                    tint = DarkThemeColors.Primary
-                                )
-                            }
-                        )
-                    }
                     DropdownMenuItem(
-                        text = { Text("Delete", color = DarkThemeColors.Error) },
+                        text = { Text("Properties", color = MaterialTheme.colorScheme.onSurface) },
+                        onClick = { showMenu = false; showPropertiesDialog = true },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.Info,
+                                contentDescription = "Properties icon",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
                         onClick = { showMenu = false; onDelete(fileItem) },
                         leadingIcon = {
                             Icon(
                                 Icons.Default.Delete,
-                                contentDescription = null,
-                                tint = DarkThemeColors.Error
+                                contentDescription = "Delete icon",
+                                tint = MaterialTheme.colorScheme.error
                             )
-                        }
+                        },
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp)
                     )
                 }
             }
@@ -203,20 +215,14 @@ fun FileListItem(
     if (showRenameDialog) {
         AlertDialog(
             onDismissRequest = { showRenameDialog = false },
-            title = { Text("Rename", color = DarkThemeColors.TextPrimary) },
+            title = { Text("Rename", color = MaterialTheme.colorScheme.onSurface) },
             text = {
                 OutlinedTextField(
                     value = renameInput,
                     onValueChange = { renameInput = it },
-                    label = { Text("New name", color = DarkThemeColors.TextSecondary) },
+                    label = { Text("New name") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = DarkThemeColors.Primary,
-                        unfocusedBorderColor = DarkThemeColors.Divider,
-                        focusedTextColor = DarkThemeColors.TextPrimary,
-                        unfocusedTextColor = DarkThemeColors.TextPrimary
-                    )
+                    modifier = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
@@ -225,7 +231,7 @@ fun FileListItem(
                         if (renameInput.isNotBlank()) onRename(fileItem, renameInput)
                         showRenameDialog = false
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = DarkThemeColors.Primary)
+                    modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                 ) {
                     Text("Rename")
                 }
@@ -233,18 +239,38 @@ fun FileListItem(
             dismissButton = {
                 TextButton(
                     onClick = { showRenameDialog = false },
-                    colors = TextButtonColors(
-                        containerColor = Color.Transparent,
-                        contentColor = DarkThemeColors.TextSecondary,
-                        disabledContainerColor = Color.Transparent,
-                        disabledContentColor = DarkThemeColors.TextTertiary
-                    )
+                    modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                 ) {
                     Text("Cancel")
                 }
+            }
+        )
+    }
+
+    // Properties Dialog
+    if (showPropertiesDialog) {
+        AlertDialog(
+            onDismissRequest = { showPropertiesDialog = false },
+            title = { Text("File Properties", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Name: ${fileItem.name}", style = MaterialTheme.typography.bodyMedium)
+                    Text("Path: ${fileItem.path}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Type: ${if (fileItem.isDirectory) "Directory" else getFileType(fileItem.name)}", style = MaterialTheme.typography.bodyMedium)
+                    if (!fileItem.isDirectory) {
+                        Text("Size: ${getFormattedSize(fileItem.size)} (${fileItem.size} bytes)", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Text("Modified: ${getFormattedDate(fileItem.lastModified)}", style = MaterialTheme.typography.bodyMedium)
+                }
             },
-            containerColor = DarkThemeColors.SurfaceLight,
-            titleContentColor = DarkThemeColors.TextPrimary
+            confirmButton = {
+                Button(
+                    onClick = { showPropertiesDialog = false },
+                    modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                ) {
+                    Text("Close")
+                }
+            }
         )
     }
 }

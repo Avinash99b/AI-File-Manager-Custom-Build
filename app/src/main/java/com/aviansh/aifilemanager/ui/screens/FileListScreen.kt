@@ -1,37 +1,22 @@
 package com.aviansh.aifilemanager.ui.screens
 
-import androidx.compose.animation.*
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.wear.compose.material3.TextButton
-import androidx.wear.compose.material3.TextButtonColors
-import com.aviansh.aifilemanager.domain.data.ChatLmMessage
-import com.aviansh.aifilemanager.domain.data.FileAction
-
 import com.aviansh.aifilemanager.domain.repository.FileItem
 import com.aviansh.aifilemanager.ui.components.EmptyState
 import com.aviansh.aifilemanager.ui.components.ErrorState
@@ -39,26 +24,28 @@ import com.aviansh.aifilemanager.ui.components.FileListContent
 import com.aviansh.aifilemanager.ui.components.FilePreviewModal
 import com.aviansh.aifilemanager.ui.components.LoadingPlaceholder
 import com.aviansh.aifilemanager.ui.components.PathHeader
-import java.io.File
+import com.aviansh.aifilemanager.ui.vm.FilterOption
+import com.aviansh.aifilemanager.ui.vm.SortOption
 
-// ─── DARK THEME PALETTE ───────────────────────────────────────────────────────
+// Legacy DarkThemeColors alias referencing MaterialTheme.colorScheme for backward compatibility
 object DarkThemeColors {
-    val Background      = Color(0xFF0A0A0A)      // AMOLED Black
-    val Surface         = Color(0xFF1A1A1A)      // Dark gray
-    val SurfaceLight    = Color(0xFF2A2A2A)      // Lighter dark gray
-    val Primary         = Color(0xFF7C3AED)      // Vibrant Purple
-    val PrimaryLight    = Color(0xFF9F5FFF)      // Lighter Purple
-    val Accent          = Color(0xFF10B981)      // Emerald Green
-    val AccentLight     = Color(0xFF34D399)      // Light Emerald
-    val TextPrimary     = Color(0xFFFAFAFA)      // Almost white
-    val TextSecondary   = Color(0xFFA0A0A0)      // Medium gray
-    val TextTertiary    = Color(0xFF707070)      // Darker gray
-    val Error           = Color(0xFFEF4444)      // Bright red
-    val Warning         = Color(0xFFF59E0B)      // Amber
-    val Success         = Color(0xFF10B981)      // Green
-    val Divider         = Color(0xFF333333)      // Subtle divider
+    val Background      @Composable get() = MaterialTheme.colorScheme.background
+    val Surface         @Composable get() = MaterialTheme.colorScheme.surface
+    val SurfaceLight    @Composable get() = MaterialTheme.colorScheme.surfaceVariant
+    val Primary         @Composable get() = MaterialTheme.colorScheme.primary
+    val PrimaryLight    @Composable get() = MaterialTheme.colorScheme.primaryContainer
+    val Accent          @Composable get() = MaterialTheme.colorScheme.tertiary
+    val AccentLight     @Composable get() = MaterialTheme.colorScheme.tertiaryContainer
+    val TextPrimary     @Composable get() = MaterialTheme.colorScheme.onSurface
+    val TextSecondary   @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
+    val TextTertiary    @Composable get() = MaterialTheme.colorScheme.outline
+    val Error           @Composable get() = MaterialTheme.colorScheme.error
+    val Warning         @Composable get() = MaterialTheme.colorScheme.errorContainer
+    val Success         @Composable get() = MaterialTheme.colorScheme.primary
+    val Divider         @Composable get() = MaterialTheme.colorScheme.outlineVariant
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FileListScreen(
     files: List<FileItem>,
@@ -66,10 +53,28 @@ fun FileListScreen(
     isLoading: Boolean,
     error: String?,
     selectedFile: FileItem?,
+    selectedPaths: Set<String> = emptySet(),
+    isSelectionMode: Boolean = false,
+    searchQuery: String = "",
+    sortOption: SortOption = SortOption.NAME_ASC,
+    filterOption: FilterOption = FilterOption.ALL,
+    hasClipboard: Boolean = false,
     onNavigate: (FileItem) -> Unit,
+    onNavigateToPath: (String) -> Unit = {},
     onSelect: (FileItem) -> Unit,
+    onToggleSelect: (FileItem) -> Unit = {},
+    onSelectAll: () -> Unit = {},
+    onClearSelection: () -> Unit = {},
     onNavigateUp: () -> Unit,
     onDelete: (FileItem) -> Unit,
+    onDeleteSelected: () -> Unit = {},
+    onCopySelected: (isCut: Boolean) -> Unit = {},
+    onPaste: () -> Unit = {},
+    onShareSelected: () -> Unit = {},
+    onCreateFolder: (String) -> Unit = {},
+    onSearchQueryChange: (String) -> Unit = {},
+    onSortChange: (SortOption) -> Unit = {},
+    onFilterChange: (FilterOption) -> Unit = {},
     onRename: (FileItem, String) -> Unit,
     onRetry: () -> Unit,
     getFormattedSize: (Long) -> String,
@@ -77,45 +82,273 @@ fun FileListScreen(
     modifier: Modifier = Modifier
 ) {
     var previewFile by remember { mutableStateOf<FileItem?>(null) }
+    var showSortMenu by remember { mutableStateOf(false) }
+    var showCreateFolderDialog by remember { mutableStateOf(false) }
+    var folderNameInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(DarkThemeColors.Background)
+            .background(MaterialTheme.colorScheme.background)
     ) {
-        // Path Header
-        PathHeader(currentPath, onNavigateUp)
+        // Multi-select Contextual Action Bar or Standard Path Header
+        if (isSelectionMode) {
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        IconButton(
+                            onClick = onClearSelection,
+                            modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear Selection")
+                        }
+                        Text(
+                            text = "${selectedPaths.size} selected",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
 
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        IconButton(
+                            onClick = onSelectAll,
+                            modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        ) {
+                            Icon(Icons.Default.SelectAll, contentDescription = "Select All")
+                        }
+                        IconButton(
+                            onClick = { onCopySelected(false) },
+                            modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy")
+                        }
+                        IconButton(
+                            onClick = { onCopySelected(true) },
+                            modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        ) {
+                            Icon(Icons.Default.ContentCut, contentDescription = "Cut")
+                        }
+                        IconButton(
+                            onClick = onShareSelected,
+                            modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = "Share")
+                        }
+                        IconButton(
+                            onClick = onDeleteSelected,
+                            modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete Selected", tint = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        } else {
+            PathHeader(
+                currentPath = currentPath,
+                onNavigateUp = onNavigateUp,
+                onNavigateToPath = onNavigateToPath
+            )
+        }
+
+        // Search Bar & Utility Action Row
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                placeholder = { Text("Search files...") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(
+                            onClick = { onSearchQueryChange("") },
+                            modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        ) {
+                            Icon(Icons.Default.Clear, contentDescription = "Clear Search")
+                        }
+                    }
+                },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(24.dp)
+            )
+
+            // Create Folder Button
+            IconButton(
+                onClick = { showCreateFolderDialog = true },
+                modifier = Modifier
+                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                    .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(12.dp))
+            ) {
+                Icon(Icons.Default.CreateNewFolder, contentDescription = "Create Folder", tint = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
+
+            // Paste Button (if clipboard active)
+            if (hasClipboard) {
+                IconButton(
+                    onClick = onPaste,
+                    modifier = Modifier
+                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        .background(MaterialTheme.colorScheme.tertiaryContainer, RoundedCornerShape(12.dp))
+                ) {
+                    Icon(Icons.Default.ContentPaste, contentDescription = "Paste", tint = MaterialTheme.colorScheme.onTertiaryContainer)
+                }
+            }
+
+            // Sort Menu Button
+            Box {
+                IconButton(
+                    onClick = { showSortMenu = true },
+                    modifier = Modifier
+                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort Files", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+                DropdownMenu(
+                    expanded = showSortMenu,
+                    onDismissRequest = { showSortMenu = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Name (A-Z)") },
+                        onClick = { onSortChange(SortOption.NAME_ASC); showSortMenu = false },
+                        leadingIcon = { if (sortOption == SortOption.NAME_ASC) Icon(Icons.Default.Check, contentDescription = null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Name (Z-A)") },
+                        onClick = { onSortChange(SortOption.NAME_DESC); showSortMenu = false },
+                        leadingIcon = { if (sortOption == SortOption.NAME_DESC) Icon(Icons.Default.Check, contentDescription = null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Date (Newest)") },
+                        onClick = { onSortChange(SortOption.DATE_DESC); showSortMenu = false },
+                        leadingIcon = { if (sortOption == SortOption.DATE_DESC) Icon(Icons.Default.Check, contentDescription = null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Date (Oldest)") },
+                        onClick = { onSortChange(SortOption.DATE_ASC); showSortMenu = false },
+                        leadingIcon = { if (sortOption == SortOption.DATE_ASC) Icon(Icons.Default.Check, contentDescription = null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Size (Largest)") },
+                        onClick = { onSortChange(SortOption.SIZE_DESC); showSortMenu = false },
+                        leadingIcon = { if (sortOption == SortOption.SIZE_DESC) Icon(Icons.Default.Check, contentDescription = null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Size (Smallest)") },
+                        onClick = { onSortChange(SortOption.SIZE_ASC); showSortMenu = false },
+                        leadingIcon = { if (sortOption == SortOption.SIZE_ASC) Icon(Icons.Default.Check, contentDescription = null) }
+                    )
+                }
+            }
+        }
+
+        // Filter Chips Row
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            FilterOption.entries.forEach { filter ->
+                FilterChip(
+                    selected = filterOption == filter,
+                    onClick = { onFilterChange(filter) },
+                    label = { Text(filter.name.lowercase().replaceFirstChar { it.uppercase() }, fontSize = 12.sp) },
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                )
+            }
+        }
+
+        // Main File List / States
         when {
             isLoading -> LoadingPlaceholder()
             error != null -> ErrorState(error, onRetry)
             files.isEmpty() -> EmptyState()
             else -> FileListContent(
-                files,
-                listState,
-                onNavigate,
-                onSelect,
-                onDelete,
-                onRename,
-                getFormattedSize,
-                getFormattedDate,
+                files = files,
+                listState = listState,
+                selectedPaths = selectedPaths,
+                isSelectionMode = isSelectionMode,
+                onNavigate = onNavigate,
+                onSelect = onSelect,
+                onToggleSelect = onToggleSelect,
+                onLongClickSelect = { fileItem ->
+                    onToggleSelect(fileItem)
+                },
+                onDelete = onDelete,
+                onRename = onRename,
+                getFormattedSize = getFormattedSize,
+                getFormattedDate = getFormattedDate,
                 onPreview = { previewFile = it }
             )
         }
     }
 
-    // File Preview Modal
     if (previewFile != null) {
         FilePreviewModal(previewFile) { previewFile = null }
     }
+
+    // Create Folder Dialog
+    if (showCreateFolderDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateFolderDialog = false },
+            title = { Text("Create New Folder") },
+            text = {
+                OutlinedTextField(
+                    value = folderNameInput,
+                    onValueChange = { folderNameInput = it },
+                    label = { Text("Folder Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (folderNameInput.isNotBlank()) {
+                            onCreateFolder(folderNameInput)
+                            folderNameInput = ""
+                        }
+                        showCreateFolderDialog = false
+                    },
+                    modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                ) {
+                    Text("Create")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showCreateFolderDialog = false },
+                    modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
-
-
-
-
-
-
 
 fun getFileIcon(fileName: String): ImageVector =
     when {
@@ -132,7 +365,7 @@ fun getFileIcon(fileName: String): ImageVector =
             Icons.Default.Description
         fileName.endsWith(".xls") || fileName.endsWith(".xlsx") || fileName.endsWith(".csv") ->
             Icons.Default.TableChart
-        else -> Icons.Default.InsertDriveFile
+        else -> Icons.AutoMirrored.Filled.InsertDriveFile
     }
 
 fun getFileType(fileName: String): String =

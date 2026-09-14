@@ -70,7 +70,6 @@ dependencies {
 
     // ViewModel & Navigation
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.2")
-    implementation("androidx.navigation:navigation-compose:2.9.0")
 
     // Retrofit & Gson
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
@@ -79,8 +78,7 @@ dependencies {
 
     // Hilt (Aligning runtime with your version 2.60 plugin)
     implementation("com.google.dagger:hilt-android:2.60")
-    implementation(libs.androidx.compose.foundation)
-    implementation(libs.compose.material3)
+    implementation("androidx.compose.foundation:foundation")
     ksp("com.google.dagger:hilt-compiler:2.60")
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
 

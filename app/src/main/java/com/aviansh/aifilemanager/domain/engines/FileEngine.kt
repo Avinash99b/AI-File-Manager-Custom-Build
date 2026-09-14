@@ -4,37 +4,81 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
+import java.io.IOException
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 
 object FileEngine {
 
+    private const val BUFFER_SIZE = 64 * 1024 // 64KB chunk buffer
+
     /**
-     * Copies [source] → [dest].
-     * Stream direction was previously inverted; fixed here.
+     * Copies a single file from [source] to [dest].
      */
     fun copyFile(source: File, dest: File) {
+        if (!source.exists()) throw FileNotFoundException("Source file does not exist: ${source.absolutePath}")
+        if (source.isDirectory) throw IllegalArgumentException("Source is a directory, use copyRecursively: ${source.absolutePath}")
+        if (source.canonicalPath == dest.canonicalPath) return
+
         dest.parentFile?.mkdirs()
         FileInputStream(source).use { input ->
             FileOutputStream(dest).use { output ->
-                input.copyTo(output)
+                input.copyTo(output, BUFFER_SIZE)
             }
         }
     }
 
     /**
-     * Moves [source] → [dest] (copy then delete source).
+     * Recursively copies [source] to [dest].
+     * Streaming and chunked file copy. Respects [overwrite].
      */
-    fun moveFile(source: File, dest: File) {
+    fun copyRecursively(source: File, dest: File, overwrite: Boolean = false) {
+        if (!source.exists()) throw FileNotFoundException("Source does not exist: ${source.absolutePath}")
+        if (source.canonicalPath == dest.canonicalPath) return
+
+        if (source.isFile) {
+            if (dest.exists()) {
+                if (!overwrite) throw FileAlreadyExistsException(dest.absolutePath)
+            }
+            copyFile(source, dest)
+            return
+        }
+
+        if (source.isDirectory) {
+            if (!dest.exists()) {
+                dest.mkdirs()
+            }
+            val children = source.listFiles() ?: return
+            for (child in children) {
+                val childDest = File(dest, child.name)
+                copyRecursively(child, childDest, overwrite)
+            }
+        }
+    }
+
+    /**
+     * Moves [source] to [dest].
+     * Never uses implicit replacement unless [overwrite] is explicitly true.
+     */
+    fun moveFile(source: File, dest: File, overwrite: Boolean = false) {
+        if (!source.exists()) throw FileNotFoundException("Source file does not exist: ${source.absolutePath}")
+        if (source.canonicalPath == dest.canonicalPath) return
+        if (dest.exists() && !overwrite) {
+            throw FileAlreadyExistsException(dest.absolutePath)
+        }
+
+        dest.parentFile?.mkdirs()
 
         val sourcePath = Paths.get(source.absolutePath)
         val targetPath = Paths.get(dest.absolutePath)
 
-        dest.parentFile?.let { if (!it.exists()) it.mkdirs() }
-
-        // Move the file and overwrite if the target already exists
-        Files.move(sourcePath, targetPath, StandardCopyOption.REPLACE_EXISTING)
+        if (overwrite) {
+            Files.move(sourcePath, targetPath, StandardCopyOption.REPLACE_EXISTING)
+        } else {
+            Files.move(sourcePath, targetPath)
+        }
     }
 
     /**
@@ -43,9 +87,13 @@ object FileEngine {
      */
     fun createFile(path: String, tmpFile: File, overwrite: Boolean): File {
         val dest = File(path)
-        if (dest.exists() && !overwrite) throw FileAlreadyExistsException(dest)
+        if (dest.exists() && !overwrite) throw FileAlreadyExistsException(dest.absolutePath)
         dest.parentFile?.mkdirs()
-        copyFile(tmpFile, dest)
+        if (tmpFile.isDirectory) {
+            copyRecursively(tmpFile, dest, overwrite)
+        } else {
+            copyFile(tmpFile, dest)
+        }
         return dest
     }
 
@@ -57,7 +105,11 @@ object FileEngine {
         val dest = File(path)
         if (!dest.exists() && !create) throw FileNotFoundException("File not found: $path")
         dest.parentFile?.mkdirs()
-        copyFile(tmpFile, dest)
+        if (tmpFile.isDirectory) {
+            copyRecursively(tmpFile, dest, overwrite = true)
+        } else {
+            copyFile(tmpFile, dest)
+        }
         return dest
     }
 

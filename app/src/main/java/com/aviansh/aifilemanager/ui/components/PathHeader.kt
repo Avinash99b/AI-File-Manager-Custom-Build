@@ -1,79 +1,138 @@
 package com.aviansh.aifilemanager.ui.components
 
-import androidx.compose.animation.*
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.wear.compose.material3.TextButton
-import androidx.wear.compose.material3.TextButtonColors
-import com.aviansh.aifilemanager.domain.data.ChatLmMessage
-import com.aviansh.aifilemanager.domain.data.FileAction
+import java.io.File
 
-import com.aviansh.aifilemanager.domain.repository.FileItem
-import com.aviansh.aifilemanager.ui.screens.DarkThemeColors
+data class BreadcrumbSegment(
+    val name: String,
+    val path: String
+)
 
 @Composable
-fun PathHeader(currentPath: String, onNavigateUp: () -> Unit) {
+fun PathHeader(
+    currentPath: String,
+    onNavigateUp: () -> Unit,
+    onNavigateToPath: (String) -> Unit = {}
+) {
+    val segments = buildBreadcrumbs(currentPath)
+    val scrollState = rememberScrollState()
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(12.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = DarkThemeColors.Surface),
-        elevation = CardDefaults.cardElevation(4.dp)
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(2.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(8.dp),
+                .padding(6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             IconButton(
                 onClick = onNavigateUp,
                 modifier = Modifier
-                    .size(40.dp)
+                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(DarkThemeColors.Primary.copy(alpha = 0.15f))
+                    .background(MaterialTheme.colorScheme.primaryContainer)
             ) {
                 Icon(
                     Icons.AutoMirrored.Filled.ArrowBack,
-                    "Up",
-                    tint = DarkThemeColors.Primary,
+                    contentDescription = "Navigate Up",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
                     modifier = Modifier.size(20.dp)
                 )
             }
-            Text(
-                text = currentPath,
-                fontSize = 12.sp,
-                color = DarkThemeColors.TextSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
+
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(scrollState),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                segments.forEachIndexed { index, segment ->
+                    AssistChip(
+                        onClick = { onNavigateToPath(segment.path) },
+                        label = {
+                            if (index == 0) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.Home,
+                                        contentDescription = "Home Storage",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(segment.name, fontSize = 12.sp)
+                                }
+                            } else {
+                                Text(segment.name, fontSize = 12.sp)
+                            }
+                        },
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = if (index == segments.lastIndex)
+                                MaterialTheme.colorScheme.primaryContainer
+                            else
+                                MaterialTheme.colorScheme.surfaceVariant,
+                            labelColor = if (index == segments.lastIndex)
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            else
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+
+                    if (index < segments.lastIndex) {
+                        Icon(
+                            Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.size(16.dp).padding(horizontal = 2.dp)
+                        )
+                    }
+                }
+            }
         }
     }
+}
+
+private fun buildBreadcrumbs(path: String): List<BreadcrumbSegment> {
+    val clean = File(path).absolutePath
+    val rootPath = "/storage/emulated/0"
+    val result = mutableListOf<BreadcrumbSegment>()
+
+    if (clean.startsWith(rootPath)) {
+        result.add(BreadcrumbSegment("Internal", rootPath))
+        val subParts = clean.removePrefix(rootPath).split("/").filter { it.isNotBlank() }
+        var currentAcc = rootPath
+        subParts.forEach { part ->
+            currentAcc = "$currentAcc/$part"
+            result.add(BreadcrumbSegment(part, currentAcc))
+        }
+    } else {
+        val parts = clean.split("/").filter { it.isNotBlank() }
+        var currentAcc = ""
+        parts.forEach { part ->
+            currentAcc = "$currentAcc/$part"
+            result.add(BreadcrumbSegment(part, currentAcc))
+        }
+    }
+    return if (result.isEmpty()) listOf(BreadcrumbSegment("Root", "/")) else result
 }
