@@ -10,7 +10,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.aviansh.aifilemanager.ui.Routes
 import com.aviansh.aifilemanager.ui.screens.FileManagerScreen
-import com.aviansh.aifilemanager.ui.screens.GeminiSettingsRoute
+import com.aviansh.aifilemanager.ui.screens.AiSettingsRoute
 import com.aviansh.aifilemanager.ui.screens.PermissionScreen
 
 @Composable
@@ -42,12 +42,12 @@ fun PermissionGate() {
         NavHost(navController = navController, startDestination = Routes.HOME) {
             composable(Routes.HOME) {
                 FileManagerScreen(context) {
-                    navController.navigate(Routes.GEMINI_SETTINGS)
+                    navController.navigate(Routes.AI_SETTINGS)
                 }
             }
 
-            composable(Routes.GEMINI_SETTINGS) {
-                GeminiSettingsRoute {
+            composable(Routes.AI_SETTINGS) {
+                AiSettingsRoute {
                     navController.popBackStack()
                 }
             }

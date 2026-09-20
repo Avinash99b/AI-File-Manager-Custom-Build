@@ -240,7 +240,7 @@ fun FileManagerScreen(
                                 onClick = onSettingsClick,
                                 modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                             ) {
-                                Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                                Icon(Icons.Default.MoreVert, contentDescription = "AI provider settings")
                             }
                         },
                         colors = TopAppBarDefaults.topAppBarColors(
@@ -319,7 +319,7 @@ fun FileManagerScreen(
                                 onClick = onSettingsClick,
                                 modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                             ) {
-                                Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                                Icon(Icons.Default.MoreVert, contentDescription = "AI provider settings")
                             }
                         },
                         colors = TopAppBarDefaults.topAppBarColors(

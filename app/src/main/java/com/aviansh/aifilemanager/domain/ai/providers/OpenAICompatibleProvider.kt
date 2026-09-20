@@ -27,10 +27,28 @@ class OpenAICompatibleProvider(
     private val timeoutMillis: Int = 30000
 ) : LLMProvider {
 
+    /**
+     * Normalizes whatever the user typed in settings into a usable base URL.
+     *
+     * - "https://api.openai.com"            -> "https://api.openai.com/v1"
+     * - "https://api.openai.com/v1/"        -> "https://api.openai.com/v1"
+     * - "http://127.0.0.1:11434"            -> "http://127.0.0.1:11434/v1"
+     * - "https://host/openai/deployments/x" -> left untouched (custom gateways / Azure style)
+     */
     private val baseUrl: String by lazy {
-        val trimmed = rawBaseUrl.trim().trimEnd('/')
-        if (trimmed.endsWith("/v1")) trimmed else "$trimmed/v1"
+        var trimmed = rawBaseUrl.trim().trimEnd('/')
+        if (trimmed.isEmpty()) trimmed = "https://api.openai.com/v1"
+        if (trimmed.endsWith("/chat/completions")) {
+            trimmed = trimmed.removeSuffix("/chat/completions")
+        }
+        val schemeEnd = trimmed.indexOf("://")
+        val pathStart = if (schemeEnd >= 0) trimmed.indexOf('/', schemeEnd + 3) else trimmed.indexOf('/')
+        val hasPath = pathStart >= 0
+        if (hasPath) trimmed else "$trimmed/v1"
     }
+
+    /** Exposed for tests / diagnostics: the URL actually used for requests. */
+    fun resolvedBaseUrl(): String = baseUrl
 
     override suspend fun generate(
         prompt: String,
@@ -48,7 +66,14 @@ class OpenAICompatibleProvider(
 
         conversation.forEach { msg ->
             messagesArray.put(JSONObject().apply {
-                put("role", if (msg.role.name == "USER") "user" else "assistant")
+                put(
+                    "role",
+                    when (msg.role.name) {
+                        "USER" -> "user"
+                        "SYSTEM" -> "system"
+                        else -> "assistant"
+                    }
+                )
                 put("content", msg.content)
             })
         }
@@ -190,7 +215,14 @@ class OpenAICompatibleProvider(
     }.flowOn(Dispatchers.IO)
 
     override suspend fun test(): Boolean = withContext(Dispatchers.IO) {
-        try {
+        // Most gateways expose /models, but some (Azure style deployments, a few proxies) do not.
+        // Fall back to a minimal chat completion so those endpoints still validate correctly.
+        if (probeModels()) return@withContext true
+        probeChatCompletion()
+    }
+
+    private fun probeModels(): Boolean {
+        return try {
             val url = URL("$baseUrl/models")
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
@@ -201,6 +233,44 @@ class OpenAICompatibleProvider(
                 }
             }
             val statusCode = conn.responseCode
+            conn.disconnect()
+            statusCode in 200..299
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun probeChatCompletion(): Boolean {
+        return try {
+            val body = JSONObject().apply {
+                put("model", modelName)
+                put("messages", JSONArray().put(JSONObject().apply {
+                    put("role", "user")
+                    put("content", "ping")
+                }))
+                put("max_tokens", 1)
+                put("stream", false)
+            }
+
+            val url = URL("$baseUrl/chat/completions")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15000
+                readTimeout = 15000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                if (apiKey.isNotBlank()) {
+                    setRequestProperty("Authorization", "Bearer $apiKey")
+                }
+            }
+
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { writer ->
+                writer.write(body.toString())
+                writer.flush()
+            }
+
+            val statusCode = conn.responseCode
+            conn.disconnect()
             statusCode in 200..299
         } catch (e: Exception) {
             false

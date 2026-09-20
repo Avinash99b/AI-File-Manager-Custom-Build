@@ -33,10 +33,11 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Science
-import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -56,6 +57,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -85,7 +89,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.aviansh.aifilemanager.domain.repository.GeminiModelRepository
+import com.aviansh.aifilemanager.domain.ai.ProviderKind
+import com.aviansh.aifilemanager.domain.repository.AiProviderRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -97,7 +102,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-private val PresetGeminiModels = listOf(
+internal val PresetGeminiModels = listOf(
     "gemini-3.1-flash-lite",
     "gemini-3.1-flash",
     "gemini-3.1-pro",
@@ -105,45 +110,101 @@ private val PresetGeminiModels = listOf(
     "gemini-2.5-pro"
 )
 
+internal val PresetOpenAiModels = listOf(
+    "gpt-4o-mini",
+    "gpt-4o",
+    "gpt-4.1-mini",
+    "gpt-4.1",
+    "o4-mini"
+)
+
+/** Handy one-tap presets for common OpenAI compatible gateways. */
+internal data class EndpointPreset(val label: String, val baseUrl: String)
+
+internal val OpenAiEndpointPresets = listOf(
+    EndpointPreset("OpenAI", "https://api.openai.com/v1"),
+    EndpointPreset("OpenRouter", "https://openrouter.ai/api/v1"),
+    EndpointPreset("Groq", "https://api.groq.com/openai/v1"),
+    EndpointPreset("Together", "https://api.together.xyz/v1"),
+    EndpointPreset("Ollama (local)", "http://127.0.0.1:11434/v1"),
+    EndpointPreset("LM Studio (local)", "http://127.0.0.1:1234/v1")
+)
+
 @Immutable
-data class GeminiSettingsUiState(
+data class AiSettingsUiState(
+    val selectedProvider: ProviderKind = ProviderKind.GEMINI,
+
+    // Gemini
     val apiKey: String = "",
     val modelName: String = PresetGeminiModels.first(),
     val customModelEnabled: Boolean = false,
     val customModelText: String = "",
+
+    // OpenAI compatible
+    val openAiApiKey: String = "",
+    val openAiModelName: String = PresetOpenAiModels.first(),
+    val openAiCustomModelEnabled: Boolean = false,
+    val openAiCustomModelText: String = "",
+    val openAiBaseUrl: String = "https://api.openai.com/v1",
+
     val isApiKeyVisible: Boolean = false,
     val isLoading: Boolean = true,
     val isSaving: Boolean = false,
     val isTesting: Boolean = false,
-    val isConfigured: Boolean = false,
+    val isGeminiConfigured: Boolean = false,
+    val isOpenAiConfigured: Boolean = false,
     val showDeleteDialog: Boolean = false,
     val connectionResult: String? = null,
     val modified: Boolean = false
 ) {
+    val isGemini: Boolean get() = selectedProvider == ProviderKind.GEMINI
+
     val effectiveModelName: String
-        get() = if (customModelEnabled) customModelText.trim() else modelName.trim()
+        get() = if (isGemini) {
+            if (customModelEnabled) customModelText.trim() else modelName.trim()
+        } else {
+            if (openAiCustomModelEnabled) openAiCustomModelText.trim() else openAiModelName.trim()
+        }
+
+    val effectiveApiKey: String
+        get() = if (isGemini) apiKey.trim() else openAiApiKey.trim()
+
+    val isConfigured: Boolean
+        get() = if (isGemini) isGeminiConfigured else isOpenAiConfigured
+
+    /** OpenAI compatible endpoints may be keyless (Ollama, LM Studio, vLLM, ...). */
+    private val apiKeySatisfied: Boolean
+        get() = if (isGemini) apiKey.isNotBlank() else true
+
+    private val baseUrlSatisfied: Boolean
+        get() = isGemini || openAiBaseUrl.isNotBlank()
 
     val canSave: Boolean
-        get() = !isLoading && !isSaving && !isTesting && apiKey.isNotBlank() && effectiveModelName.isNotBlank() && modified
+        get() = !isLoading && !isSaving && !isTesting && apiKeySatisfied && baseUrlSatisfied &&
+            effectiveModelName.isNotBlank() && modified
 
     val canTest: Boolean
-        get() = !isLoading && !isSaving && !isTesting && apiKey.isNotBlank() && effectiveModelName.isNotBlank()
+        get() = !isLoading && !isSaving && !isTesting && apiKeySatisfied && baseUrlSatisfied &&
+            effectiveModelName.isNotBlank()
+
+    val providerTitle: String
+        get() = if (isGemini) "Gemini" else "OpenAI compatible"
 }
 
-sealed interface GeminiSettingsEvent {
-    data class Snackbar(val message: String) : GeminiSettingsEvent
+sealed interface AiSettingsEvent {
+    data class Snackbar(val message: String) : AiSettingsEvent
 }
 
 @HiltViewModel
-class GeminiSettingsViewModel @Inject constructor(
-    private val repository: GeminiModelRepository
+class AiSettingsViewModel @Inject constructor(
+    private val repository: AiProviderRepository
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(GeminiSettingsUiState())
-    val uiState: StateFlow<GeminiSettingsUiState> = _uiState.asStateFlow()
+    private val _uiState = MutableStateFlow(AiSettingsUiState())
+    val uiState: StateFlow<AiSettingsUiState> = _uiState.asStateFlow()
 
-    private val _events = MutableSharedFlow<GeminiSettingsEvent>()
-    val events: SharedFlow<GeminiSettingsEvent> = _events
+    private val _events = MutableSharedFlow<AiSettingsEvent>()
+    val events: SharedFlow<AiSettingsEvent> = _events
 
     init {
         load()
@@ -153,23 +214,49 @@ class GeminiSettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, connectionResult = null) }
 
+            val selected = repository.getSelectedProvider()
+
             val apiKey = repository.getApiKey().orEmpty()
-            val modelName = repository.getModelName().orEmpty().ifBlank { PresetGeminiModels.first() }
+            val modelName = repository.getModelName().ifBlank { PresetGeminiModels.first() }
             val isCustom = modelName !in PresetGeminiModels
+
+            val openAiKey = repository.getOpenAiApiKey().orEmpty()
+            val openAiModel = repository.getOpenAiModelName().ifBlank { PresetOpenAiModels.first() }
+            val openAiCustom = openAiModel !in PresetOpenAiModels
+            val openAiBaseUrl = repository.getOpenAiBaseUrl()
 
             _uiState.update {
                 it.copy(
+                    selectedProvider = selected,
                     apiKey = apiKey,
                     modelName = if (isCustom) PresetGeminiModels.first() else modelName,
                     customModelEnabled = isCustom,
                     customModelText = if (isCustom) modelName else "",
-                    isConfigured = repository.hasConfiguration(),
+                    openAiApiKey = openAiKey,
+                    openAiModelName = if (openAiCustom) PresetOpenAiModels.first() else openAiModel,
+                    openAiCustomModelEnabled = openAiCustom,
+                    openAiCustomModelText = if (openAiCustom) openAiModel else "",
+                    openAiBaseUrl = openAiBaseUrl,
+                    isGeminiConfigured = repository.hasConfiguration(),
+                    isOpenAiConfigured = repository.hasOpenAiConfiguration(),
                     isLoading = false,
                     modified = false
                 )
             }
         }
     }
+
+    fun onProviderChange(kind: ProviderKind) {
+        if (_uiState.value.selectedProvider == kind) return
+        _uiState.update { it.copy(selectedProvider = kind, connectionResult = null, modified = true) }
+        // Persist immediately so the agent uses the newly picked provider even if the user
+        // leaves the screen without pressing save.
+        viewModelScope.launch {
+            runCatching { repository.setSelectedProvider(kind) }
+        }
+    }
+
+    // ---- Gemini inputs ----
 
     fun onApiKeyChange(value: String) {
         _uiState.update { it.copy(apiKey = value, modified = true, connectionResult = null) }
@@ -202,6 +289,47 @@ class GeminiSettingsViewModel @Inject constructor(
         _uiState.update { it.copy(customModelText = value, modified = true, connectionResult = null) }
     }
 
+    // ---- OpenAI compatible inputs ----
+
+    fun onOpenAiApiKeyChange(value: String) {
+        _uiState.update { it.copy(openAiApiKey = value, modified = true, connectionResult = null) }
+    }
+
+    fun onOpenAiModelChange(value: String) {
+        _uiState.update {
+            it.copy(
+                openAiModelName = value,
+                openAiCustomModelEnabled = false,
+                openAiCustomModelText = "",
+                modified = true,
+                connectionResult = null
+            )
+        }
+    }
+
+    fun onOpenAiCustomModelEnabledChange(enabled: Boolean) {
+        _uiState.update {
+            it.copy(
+                openAiCustomModelEnabled = enabled,
+                openAiCustomModelText = if (enabled && it.openAiCustomModelText.isBlank()) {
+                    it.openAiModelName
+                } else {
+                    it.openAiCustomModelText
+                },
+                modified = true,
+                connectionResult = null
+            )
+        }
+    }
+
+    fun onOpenAiCustomModelTextChange(value: String) {
+        _uiState.update { it.copy(openAiCustomModelText = value, modified = true, connectionResult = null) }
+    }
+
+    fun onOpenAiBaseUrlChange(value: String) {
+        _uiState.update { it.copy(openAiBaseUrl = value, modified = true, connectionResult = null) }
+    }
+
     fun toggleApiKeyVisibility() {
         _uiState.update { it.copy(isApiKeyVisible = !it.isApiKeyVisible) }
     }
@@ -212,11 +340,20 @@ class GeminiSettingsViewModel @Inject constructor(
 
     fun save() {
         val state = _uiState.value
-        val apiKey = state.apiKey.trim()
         val modelName = state.effectiveModelName
 
-        if (apiKey.isBlank()) {
+        if (state.isGemini && state.apiKey.isBlank()) {
             emitSnackbar("API key cannot be empty.")
+            return
+        }
+
+        if (!state.isGemini && state.openAiBaseUrl.isBlank()) {
+            emitSnackbar("Base URL cannot be empty.")
+            return
+        }
+
+        if (!state.isGemini && !isValidHttpUrl(state.openAiBaseUrl)) {
+            emitSnackbar("Base URL must start with http:// or https://")
             return
         }
 
@@ -228,16 +365,34 @@ class GeminiSettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true, connectionResult = null) }
             try {
-                repository.save(apiKey = apiKey, modelName = modelName)
-                _uiState.update {
-                    it.copy(
-                        isSaving = false,
-                        isConfigured = true,
-                        modified = false,
-                        connectionResult = "Saved successfully."
+                repository.setSelectedProvider(state.selectedProvider)
+
+                if (state.isGemini) {
+                    repository.save(apiKey = state.apiKey.trim(), modelName = modelName)
+                    _uiState.update {
+                        it.copy(
+                            isSaving = false,
+                            isGeminiConfigured = true,
+                            modified = false,
+                            connectionResult = "Saved successfully."
+                        )
+                    }
+                } else {
+                    repository.saveOpenAi(
+                        apiKey = state.openAiApiKey.trim(),
+                        modelName = modelName,
+                        baseUrl = state.openAiBaseUrl.trim()
                     )
+                    _uiState.update {
+                        it.copy(
+                            isSaving = false,
+                            isOpenAiConfigured = true,
+                            modified = false,
+                            connectionResult = "Saved successfully."
+                        )
+                    }
                 }
-                emitSnackbar("Gemini configuration saved.")
+                emitSnackbar("${state.providerTitle} configuration saved.")
             } catch (e: Exception) {
                 _uiState.update { it.copy(isSaving = false) }
                 emitSnackbar(e.message ?: "Failed to save configuration.")
@@ -246,23 +401,41 @@ class GeminiSettingsViewModel @Inject constructor(
     }
 
     fun delete() {
+        val state = _uiState.value
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true, showDeleteDialog = false, connectionResult = null) }
             try {
-                repository.clear()
-                _uiState.update {
-                    it.copy(
-                        apiKey = "",
-                        modelName = PresetGeminiModels.first(),
-                        customModelEnabled = false,
-                        customModelText = "",
-                        isSaving = false,
-                        isConfigured = false,
-                        modified = false,
-                        connectionResult = "Configuration deleted."
-                    )
+                if (state.isGemini) {
+                    repository.clearGemini()
+                    _uiState.update {
+                        it.copy(
+                            apiKey = "",
+                            modelName = PresetGeminiModels.first(),
+                            customModelEnabled = false,
+                            customModelText = "",
+                            isSaving = false,
+                            isGeminiConfigured = false,
+                            modified = false,
+                            connectionResult = "Configuration deleted."
+                        )
+                    }
+                } else {
+                    repository.clearOpenAi()
+                    _uiState.update {
+                        it.copy(
+                            openAiApiKey = "",
+                            openAiModelName = PresetOpenAiModels.first(),
+                            openAiCustomModelEnabled = false,
+                            openAiCustomModelText = "",
+                            openAiBaseUrl = "https://api.openai.com/v1",
+                            isSaving = false,
+                            isOpenAiConfigured = false,
+                            modified = false,
+                            connectionResult = "Configuration deleted."
+                        )
+                    }
                 }
-                emitSnackbar("Gemini configuration deleted.")
+                emitSnackbar("${state.providerTitle} configuration deleted.")
             } catch (e: Exception) {
                 _uiState.update { it.copy(isSaving = false) }
                 emitSnackbar(e.message ?: "Failed to delete configuration.")
@@ -272,10 +445,19 @@ class GeminiSettingsViewModel @Inject constructor(
 
     fun testConnection() {
         val state = _uiState.value
-        val apiKey = state.apiKey.trim()
         val modelName = state.effectiveModelName
 
-        if (apiKey.isBlank() || modelName.isBlank()) {
+        if (state.isGemini && state.apiKey.isBlank()) {
+            emitSnackbar("API key and model are required.")
+            return
+        }
+
+        if (!state.isGemini && (state.openAiBaseUrl.isBlank() || !isValidHttpUrl(state.openAiBaseUrl))) {
+            emitSnackbar("A valid base URL is required.")
+            return
+        }
+
+        if (modelName.isBlank()) {
             emitSnackbar("API key and model are required.")
             return
         }
@@ -283,10 +465,18 @@ class GeminiSettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isTesting = true, connectionResult = null) }
             try {
-                val provider = com.aviansh.aifilemanager.domain.ai.providers.GeminiAIProvider(
-                    apiKey = apiKey,
-                    modelName = modelName
-                )
+                val provider = if (state.isGemini) {
+                    com.aviansh.aifilemanager.domain.ai.providers.GeminiAIProvider(
+                        apiKey = state.apiKey.trim(),
+                        modelName = modelName
+                    )
+                } else {
+                    com.aviansh.aifilemanager.domain.ai.providers.OpenAICompatibleProvider(
+                        apiKey = state.openAiApiKey.trim(),
+                        modelName = modelName,
+                        rawBaseUrl = state.openAiBaseUrl.trim()
+                    )
+                }
 
                 val success = provider.test()
                 _uiState.update {
@@ -295,7 +485,10 @@ class GeminiSettingsViewModel @Inject constructor(
                         connectionResult = if (success) "Connection successful." else "Connection failed."
                     )
                 }
-                emitSnackbar(if (success) "Gemini connection looks good." else "Gemini test failed.")
+                emitSnackbar(
+                    if (success) "${state.providerTitle} connection looks good."
+                    else "${state.providerTitle} test failed."
+                )
             } catch (e: Exception) {
                 e.printStackTrace()
                 _uiState.update {
@@ -309,17 +502,21 @@ class GeminiSettingsViewModel @Inject constructor(
         }
     }
 
+    private fun isValidHttpUrl(url: String): Boolean {
+        val trimmed = url.trim()
+        return trimmed.startsWith("http://") || trimmed.startsWith("https://")
+    }
+
     private fun emitSnackbar(message: String) {
         viewModelScope.launch {
-            _events.emit(GeminiSettingsEvent.Snackbar(message))
+            _events.emit(AiSettingsEvent.Snackbar(message))
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun GeminiSettingsRoute(
-    viewModel: GeminiSettingsViewModel = hiltViewModel(),
+fun AiSettingsRoute(
+    viewModel: AiSettingsViewModel = hiltViewModel(),
     onBackClick: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -328,19 +525,25 @@ fun GeminiSettingsRoute(
     LaunchedEffect(Unit) {
         viewModel.events.collectLatest { event ->
             when (event) {
-                is GeminiSettingsEvent.Snackbar -> snackbarHostState.showSnackbar(event.message)
+                is AiSettingsEvent.Snackbar -> snackbarHostState.showSnackbar(event.message)
             }
         }
     }
 
-    GeminiSettingsScreen(
+    AiSettingsScreen(
         uiState = uiState,
         snackbarHostState = snackbarHostState,
         onBackClick = onBackClick,
+        onProviderChange = viewModel::onProviderChange,
         onApiKeyChange = viewModel::onApiKeyChange,
         onModelChange = viewModel::onModelChange,
         onCustomModelEnabledChange = viewModel::onCustomModelEnabledChange,
         onCustomModelTextChange = viewModel::onCustomModelTextChange,
+        onOpenAiApiKeyChange = viewModel::onOpenAiApiKeyChange,
+        onOpenAiModelChange = viewModel::onOpenAiModelChange,
+        onOpenAiCustomModelEnabledChange = viewModel::onOpenAiCustomModelEnabledChange,
+        onOpenAiCustomModelTextChange = viewModel::onOpenAiCustomModelTextChange,
+        onOpenAiBaseUrlChange = viewModel::onOpenAiBaseUrlChange,
         onToggleApiKeyVisibility = viewModel::toggleApiKeyVisibility,
         onSave = viewModel::save,
         onTest = viewModel::testConnection,
@@ -352,14 +555,20 @@ fun GeminiSettingsRoute(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun GeminiSettingsScreen(
-    uiState: GeminiSettingsUiState,
+fun AiSettingsScreen(
+    uiState: AiSettingsUiState,
     snackbarHostState: SnackbarHostState,
     onBackClick: () -> Unit,
+    onProviderChange: (ProviderKind) -> Unit,
     onApiKeyChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
     onCustomModelEnabledChange: (Boolean) -> Unit,
     onCustomModelTextChange: (String) -> Unit,
+    onOpenAiApiKeyChange: (String) -> Unit,
+    onOpenAiModelChange: (String) -> Unit,
+    onOpenAiCustomModelEnabledChange: (Boolean) -> Unit,
+    onOpenAiCustomModelTextChange: (String) -> Unit,
+    onOpenAiBaseUrlChange: (String) -> Unit,
     onToggleApiKeyVisibility: () -> Unit,
     onSave: () -> Unit,
     onTest: () -> Unit,
@@ -377,12 +586,12 @@ fun GeminiSettingsScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Gemini AI",
+                            text = "AI provider",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = "Model and API key manager",
+                            text = "Gemini or any OpenAI compatible endpoint",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -391,11 +600,6 @@ fun GeminiSettingsScreen(
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { expanded = false }) {
-                        Icon(Icons.Outlined.Settings, contentDescription = "Close menu")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -427,7 +631,7 @@ fun GeminiSettingsScreen(
                 ) {
                     CircularProgressIndicator()
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text("Loading Gemini settings...")
+                    Text("Loading AI settings...")
                 }
                 return@Box
             }
@@ -440,11 +644,116 @@ fun GeminiSettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 HeroCard(
+                    providerTitle = uiState.providerTitle,
                     configured = uiState.isConfigured,
                     modelName = uiState.effectiveModelName,
                     connection = uiState.connectionResult
                 )
 
+                // ---------- Provider picker ----------
+                ElevatedCard(
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.elevatedCardColors(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)
+                    ),
+                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 3.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        SectionTitle(
+                            icon = Icons.Outlined.Cloud,
+                            title = "Provider",
+                            subtitle = "Pick which backend the AI agent talks to"
+                        )
+
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            SegmentedButton(
+                                selected = uiState.selectedProvider == ProviderKind.GEMINI,
+                                onClick = { onProviderChange(ProviderKind.GEMINI) },
+                                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2)
+                            ) {
+                                Text("Gemini")
+                            }
+                            SegmentedButton(
+                                selected = uiState.selectedProvider == ProviderKind.OPENAI_COMPATIBLE,
+                                onClick = { onProviderChange(ProviderKind.OPENAI_COMPATIBLE) },
+                                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)
+                            ) {
+                                Text("OpenAI compatible")
+                            }
+                        }
+
+                        Text(
+                            text = if (uiState.isGemini) {
+                                "Uses Google's Gemini API with your Google AI Studio key."
+                            } else {
+                                "Works with OpenAI, OpenRouter, Groq, Together, Azure-style gateways, " +
+                                    "Ollama, LM Studio, vLLM — anything exposing /chat/completions."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // ---------- Endpoint (OpenAI compatible only) ----------
+                AnimatedVisibility(visible = !uiState.isGemini) {
+                    ElevatedCard(
+                        shape = RoundedCornerShape(24.dp),
+                        colors = CardDefaults.elevatedCardColors(
+                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)
+                        ),
+                        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 3.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            SectionTitle(
+                                icon = Icons.Outlined.Link,
+                                title = "Endpoint",
+                                subtitle = "Base URL of the OpenAI compatible API"
+                            )
+
+                            OutlinedTextField(
+                                value = uiState.openAiBaseUrl,
+                                onValueChange = onOpenAiBaseUrlChange,
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("Base URL") },
+                                placeholder = { Text("https://api.openai.com/v1") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                                supportingText = {
+                                    Text("\"/v1\" is added automatically when missing. Requests go to <base>/chat/completions.")
+                                },
+                                shape = RoundedCornerShape(18.dp)
+                            )
+
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OpenAiEndpointPresets.chunked(2).forEach { rowPresets ->
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        rowPresets.forEach { preset ->
+                                            AssistChip(
+                                                onClick = { onOpenAiBaseUrlChange(preset.baseUrl) },
+                                                label = {
+                                                    Text(
+                                                        text = preset.label,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---------- API key ----------
                 ElevatedCard(
                     shape = RoundedCornerShape(24.dp),
                     colors = CardDefaults.elevatedCardColors(
@@ -459,14 +768,22 @@ fun GeminiSettingsScreen(
                         SectionTitle(
                             icon = Icons.Outlined.Lock,
                             title = "API key",
-                            subtitle = "Kept locally on this device"
+                            subtitle = if (uiState.isGemini) {
+                                "Kept encrypted on this device"
+                            } else {
+                                "Kept encrypted on this device — leave empty for local servers"
+                            }
                         )
 
+                        val keyValue = if (uiState.isGemini) uiState.apiKey else uiState.openAiApiKey
+                        val onKeyChange: (String) -> Unit =
+                            if (uiState.isGemini) onApiKeyChange else onOpenAiApiKeyChange
+
                         OutlinedTextField(
-                            value = uiState.apiKey,
-                            onValueChange = onApiKeyChange,
+                            value = keyValue,
+                            onValueChange = onKeyChange,
                             modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Gemini API key") },
+                            label = { Text(if (uiState.isGemini) "Gemini API key" else "API key") },
                             placeholder = { Text("Paste your API key") },
                             singleLine = true,
                             visualTransformation = if (uiState.isApiKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
@@ -475,7 +792,7 @@ fun GeminiSettingsScreen(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     IconButton(onClick = {
                                         val clip = clipboardManager.getText()?.text.orEmpty()
-                                        if (clip.isNotBlank()) onApiKeyChange(clip)
+                                        if (clip.isNotBlank()) onKeyChange(clip)
                                     }) {
                                         Icon(Icons.Filled.ContentPaste, contentDescription = "Paste")
                                     }
@@ -494,13 +811,13 @@ fun GeminiSettingsScreen(
                             AssistChip(
                                 onClick = {
                                     val clip = clipboardManager.getText()?.text.orEmpty()
-                                    if (clip.isNotBlank()) onApiKeyChange(clip)
+                                    if (clip.isNotBlank()) onKeyChange(clip)
                                 },
                                 label = { Text("Paste") },
                                 leadingIcon = { Icon(Icons.Filled.ContentPaste, contentDescription = null) }
                             )
                             AssistChip(
-                                onClick = { onApiKeyChange("") },
+                                onClick = { onKeyChange("") },
                                 label = { Text("Clear") },
                                 leadingIcon = { Icon(Icons.Filled.DeleteOutline, contentDescription = null) }
                             )
@@ -508,6 +825,7 @@ fun GeminiSettingsScreen(
                     }
                 }
 
+                // ---------- Model ----------
                 ElevatedCard(
                     shape = RoundedCornerShape(24.dp),
                     colors = CardDefaults.elevatedCardColors(
@@ -525,18 +843,32 @@ fun GeminiSettingsScreen(
                             subtitle = "Choose a preset or use a custom model name"
                         )
 
+                        val presets = if (uiState.isGemini) PresetGeminiModels else PresetOpenAiModels
+                        val customEnabled =
+                            if (uiState.isGemini) uiState.customModelEnabled else uiState.openAiCustomModelEnabled
+                        val customText =
+                            if (uiState.isGemini) uiState.customModelText else uiState.openAiCustomModelText
+                        val presetModel =
+                            if (uiState.isGemini) uiState.modelName else uiState.openAiModelName
+                        val onPresetSelected: (String) -> Unit =
+                            if (uiState.isGemini) onModelChange else onOpenAiModelChange
+                        val onCustomEnabled: (Boolean) -> Unit =
+                            if (uiState.isGemini) onCustomModelEnabledChange else onOpenAiCustomModelEnabledChange
+                        val onCustomText: (String) -> Unit =
+                            if (uiState.isGemini) onCustomModelTextChange else onOpenAiCustomModelTextChange
+
                         ExposedDropdownMenuBox(
                             expanded = expanded,
                             onExpandedChange = { expanded = !expanded }
                         ) {
                             OutlinedTextField(
-                                value = if (uiState.customModelEnabled) uiState.customModelText else uiState.modelName,
+                                value = if (customEnabled) customText else presetModel,
                                 onValueChange = {},
                                 readOnly = true,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .menuAnchor(),
-                                label = { Text("Gemini model") },
+                                label = { Text(if (uiState.isGemini) "Gemini model" else "Model") },
                                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                                 shape = RoundedCornerShape(18.dp)
                             )
@@ -545,13 +877,13 @@ fun GeminiSettingsScreen(
                                 expanded = expanded,
                                 onDismissRequest = { expanded = false }
                             ) {
-                                PresetGeminiModels.forEach { model ->
+                                presets.forEach { model ->
                                     DropdownMenuItem(
                                         text = { Text(model) },
                                         onClick = {
                                             expanded = false
-                                            onCustomModelEnabledChange(false)
-                                            onModelChange(model)
+                                            onCustomEnabled(false)
+                                            onPresetSelected(model)
                                         }
                                     )
                                 }
@@ -560,25 +892,31 @@ fun GeminiSettingsScreen(
                                     text = { Text("Use custom model…") },
                                     onClick = {
                                         expanded = false
-                                        onCustomModelEnabledChange(true)
+                                        onCustomEnabled(true)
                                     }
                                 )
                             }
                         }
 
-                        AnimatedVisibility(visible = uiState.customModelEnabled) {
+                        AnimatedVisibility(visible = customEnabled) {
                             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 OutlinedTextField(
-                                    value = uiState.customModelText,
-                                    onValueChange = onCustomModelTextChange,
+                                    value = customText,
+                                    onValueChange = onCustomText,
                                     modifier = Modifier.fillMaxWidth(),
                                     label = { Text("Custom model name") },
-                                    placeholder = { Text("e.g. gemini-3.5-pro-preview") },
+                                    placeholder = {
+                                        Text(
+                                            if (uiState.isGemini) "e.g. gemini-3.5-pro-preview"
+                                            else "e.g. llama-3.3-70b-versatile"
+                                        )
+                                    },
                                     singleLine = true,
+                                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
                                     shape = RoundedCornerShape(18.dp)
                                 )
                                 Text(
-                                    text = "Great for preview models or private model IDs.",
+                                    text = "Great for preview models, self-hosted models or private model IDs.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -599,6 +937,7 @@ fun GeminiSettingsScreen(
                     }
                 }
 
+                // ---------- Actions ----------
                 ElevatedCard(
                     shape = RoundedCornerShape(24.dp),
                     colors = CardDefaults.elevatedCardColors(
@@ -693,9 +1032,9 @@ fun GeminiSettingsScreen(
                             tint = MaterialTheme.colorScheme.error
                         )
                     },
-                    title = { Text("Delete Gemini configuration?") },
+                    title = { Text("Delete ${uiState.providerTitle} configuration?") },
                     text = {
-                        Text("This removes the saved API key and model name from this device.")
+                        Text("This removes the saved API key, endpoint and model name from this device.")
                     },
                     confirmButton = {
                         Button(
@@ -722,6 +1061,7 @@ fun GeminiSettingsScreen(
 
 @Composable
 private fun HeroCard(
+    providerTitle: String,
     configured: Boolean,
     modelName: String,
     connection: String?
@@ -762,7 +1102,7 @@ private fun HeroCard(
                 Spacer(modifier = Modifier.width(14.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Gemini provider",
+                        text = "$providerTitle provider",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -883,3 +1223,12 @@ private fun StatusBanner(
         }
     }
 }
+
+/**
+ * Legacy entry point kept so older navigation code keeps compiling; it now shows the
+ * multi-provider settings screen.
+ */
+@Composable
+fun GeminiSettingsRoute(
+    onBackClick: () -> Unit
+) = AiSettingsRoute(onBackClick = onBackClick)

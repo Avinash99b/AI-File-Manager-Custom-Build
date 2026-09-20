@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Remote providers (OpenAI, OpenRouter, Groq, Gemini, ...) are always reached over HTTPS.
+
+    Self-hosted OpenAI compatible servers (Ollama, LM Studio, llama.cpp, vLLM) normally listen on
+    plain HTTP on the device itself or on the local network, so cleartext is permitted for those
+    hosts only. Everything else stays HTTPS-only.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <!-- Android emulator loopback to the developer machine -->
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">10.0.3.2</domain>
+        <domain includeSubdomains="true">local</domain>
+        <domain includeSubdomains="true">home</domain>
+        <domain includeSubdomains="true">lan</domain>
+    </domain-config>
+</network-security-config>

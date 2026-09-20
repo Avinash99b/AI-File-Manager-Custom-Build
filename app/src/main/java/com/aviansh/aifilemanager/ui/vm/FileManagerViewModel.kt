@@ -14,7 +14,7 @@ import com.aviansh.aifilemanager.domain.data.FileAction
 import com.aviansh.aifilemanager.domain.data.FileActionType
 import com.aviansh.aifilemanager.domain.repository.FileItem
 import com.aviansh.aifilemanager.domain.repository.FileRepository
-import com.aviansh.aifilemanager.domain.repository.GeminiModelRepository
+import com.aviansh.aifilemanager.domain.repository.AiProviderRepository
 import com.aviansh.aifilemanager.domain.transactions.PlanBinding
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -84,7 +84,7 @@ private fun <T> MutableList<T>.trimToLast(maxSize: Int) {
 @HiltViewModel
 class FileManagerViewModel @Inject constructor(
     private val fileRepository: FileRepository,
-    private val geminiRepository: GeminiModelRepository
+    private val aiProviderRepository: AiProviderRepository
 ) : ViewModel() {
 
     private val tag = "FileManagerVM"
@@ -585,10 +585,13 @@ class FileManagerViewModel @Inject constructor(
             }
             _executionState.value = ExecutionState.Planning
 
-            val provider = geminiRepository.getProvider()
+            val provider = aiProviderRepository.getProvider()
             if (provider == null) {
                 _timeline.update { old ->
-                    val updated = old + TimelineEvent.ExecutionLog("AI Provider not configured.", true)
+                    val updated = old + TimelineEvent.ExecutionLog(
+                        "AI provider not configured. Open the menu in the top bar and set up Gemini or an OpenAI compatible endpoint.",
+                        true
+                    )
                     persistTimeline(updated)
                     updated
                 }
@@ -711,7 +714,7 @@ class FileManagerViewModel @Inject constructor(
             persistTimeline(updated)
             updated
         }
-        val provider = geminiRepository.getProvider()
+        val provider = aiProviderRepository.getProvider()
         if (provider == null) {
             _executionState.value = ExecutionState.Failed("Provider not configured for repair.")
             return
