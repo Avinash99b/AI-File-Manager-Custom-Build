@@ -1,6 +1,7 @@
 package com.aviansh.aifilemanager.domain.engines
 
 import android.util.Log
+import com.aviansh.aifilemanager.domain.AppPaths
 import com.aviansh.aifilemanager.domain.data.FileAction
 import com.aviansh.aifilemanager.domain.data.FileActionType
 import com.aviansh.aifilemanager.domain.sandbox.PythonExecutionRequest
@@ -76,54 +77,100 @@ object PythonEngine {
     /**
      * Executes arbitrary python code and returns bounded stdout/stderr.
      */
-    fun executeArbitraryCode(code: String, workspaceDir: String? = null): String {
+    fun executeArbitraryCode(
+        code: String,
+        workspaceDir: String? = null,
+        allowedReadRoots: List<File> = emptyList(),
+        timeoutMillis: Long = 60_000L
+    ): String {
         val normalizedCode = cleanAndNormalizeCode(code)
         val request = PythonExecutionRequest(
             code = normalizedCode,
-            workspaceDir = workspaceDir
+            workspaceDir = workspaceDir,
+            allowedReadRoots = allowedReadRoots,
+            timeoutMillis = timeoutMillis
         )
         return execute(request)
     }
 
+    /**
+     * Directories the CPython runtime and installed wheels legitimately need to write to for
+     * imports to succeed (Chaquopy extracts requirements/assets lazily on first import, and many
+     * libraries touch temp dirs). Blocking these makes `from pypdf import PdfReader` fail with a
+     * misleading "Write denied outside workspace" error, so they are always allowed.
+     */
+    private fun defaultInfraWriteRoots(): List<File> {
+        val roots = mutableListOf<File>()
+        if (AppPaths.filesDir.isNotBlank()) roots.add(File(AppPaths.filesDir, "chaquopy"))
+        if (AppPaths.cacheDir.isNotBlank()) roots.add(File(AppPaths.cacheDir))
+        System.getProperty("java.io.tmpdir")?.takeIf { it.isNotBlank() }?.let { roots.add(File(it)) }
+        return roots
+    }
+
+    private fun canonicalOf(file: File): String = try {
+        file.canonicalPath
+    } catch (_: Exception) {
+        file.absolutePath
+    }
+
     internal fun buildHardenedPythonSetup(request: PythonExecutionRequest): String {
         val workspaceDirStr = request.workspaceDir?.let { path ->
-            if (path.isBlank()) "" else {
-                try {
-                    File(path).canonicalPath
-                } catch (_: Exception) {
-                    File(path).absolutePath
-                }
-            }
+            if (path.isBlank()) "" else canonicalOf(File(path))
         } ?: ""
 
-        val allowedRootsStr = request.allowedReadRoots.map { file ->
-            try {
-                file.canonicalPath
-            } catch (_: Exception) {
-                file.absolutePath
-            }
-        }
+        val allowedRootsStr = request.allowedReadRoots.map { canonicalOf(it) }
+
+        val infraRoots = (request.infraWriteRoots + defaultInfraWriteRoots())
+            .map { canonicalOf(it) }
+            .filter { it.isNotBlank() }
+            .distinct()
 
         return buildString {
             if (workspaceDirStr.isNotBlank()) {
                 appendLine("import os")
+                appendLine("os.makedirs(r'$workspaceDirStr', exist_ok=True)")
                 appendLine("os.chdir(r'$workspaceDirStr')")
             }
 
             if (request.denyNetwork) {
                 appendLine("""
+                    # Network policy is enforced at the socket layer rather than by banning
+                    # imports. Banning module names broke ordinary offline work, because large
+                    # chunks of the standard library (email, zipfile, xml, and therefore pypdf,
+                    # pandas and openpyxl) import socket/urllib transitively and would fail with
+                    # a misleading "denied by network policy" error. Neutralising the socket
+                    # itself is both stricter and invisible to code that never goes online.
+                    import socket as _socket_mod
+
+                    def _denied(*args, **kwargs):
+                        raise PermissionError("Network access is denied by policy")
+
+                    class _BlockedSocket(_socket_mod.socket):
+                        def connect(self, *a, **k): _denied()
+                        def connect_ex(self, *a, **k): _denied()
+                        def sendto(self, *a, **k): _denied()
+                        def bind(self, *a, **k): _denied()
+
+                    _socket_mod.socket = _BlockedSocket
+                    _socket_mod.create_connection = _denied
+                    _socket_mod.create_server = _denied
+
                     import sys, builtins
                     _orig_import = builtins.__import__
-                    _blocked_net_mods = {'socket', 'urllib', 'requests', 'http', 'httplib2', 'ftplib'}
+                    # These are pure HTTP clients: nothing offline needs them, and failing fast
+                    # on import gives the agent a much clearer signal than a socket error.
+                    _blocked_net_modules = {
+                        'requests', 'httpx', 'urllib3', 'aiohttp', 'websocket', 'websockets'
+                    }
 
                     def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
-                        mod_base = name.split('.')[0]
-                        if mod_base in _blocked_net_mods:
-                            raise PermissionError(f"Network module '{name}' is denied by network policy")
+                        if name.split('.')[0] in _blocked_net_modules:
+                            raise PermissionError(
+                                f"Network module '{name}' is denied by network policy"
+                            )
                         return _orig_import(name, globals, locals, fromlist, level)
 
                     builtins.__import__ = _safe_import
-                    sys.modules['socket'] = None
                 """.trimIndent())
             }
 
@@ -132,6 +179,7 @@ object PythonEngine {
                 _orig_open = builtins.open
                 _workspace_dir = r'$workspaceDirStr'
                 _allowed_roots = ${allowedRootsStr.map { "r'$it'" }}
+                _infra_write_roots = ${infraRoots.map { "r'$it'" }}
 
                 def _is_subpath(target, root):
                     if not root: return False
@@ -153,25 +201,56 @@ object PythonEngine {
                     except Exception:
                         return False
 
+                def _is_infra_path(filepath):
+                    # Paths owned by the Python runtime itself (Chaquopy asset extraction,
+                    # __pycache__, temp files). Writing here is an implementation detail of
+                    # importing a library, never a user-visible file operation.
+                    for root in _infra_write_roots:
+                        if root and _is_subpath(filepath, root):
+                            return True
+                    text = str(filepath)
+                    base = os.path.basename(text)
+                    if base.endswith('.pyc') or '__pycache__' in text:
+                        return True
+                    # Chaquopy extracts wheels lazily on first import; the exact data dir varies
+                    # (/data/data/... vs /data/user/0/...), so match the marker directory too.
+                    if '/chaquopy/' in text or text.endswith('/chaquopy'):
+                        return True
+                    return False
+
                 def _safe_open(file, mode='r', *args, **kwargs):
                     if isinstance(file, int):
                         return _orig_open(file, mode, *args, **kwargs)
 
-                    filepath = os.fsdecode(file) if isinstance(file, (str, bytes)) else str(file)
+                    try:
+                        filepath = os.fspath(file)
+                    except TypeError:
+                        filepath = str(file)
+                    if isinstance(filepath, bytes):
+                        filepath = os.fsdecode(filepath)
+
                     mode_str = str(mode)
-                    is_write = 'w' in mode_str or 'a' in mode_str or '+' in mode_str or 'x' in mode_str
+                    is_write = any(flag in mode_str for flag in ('w', 'a', '+', 'x'))
+
+                    if _is_infra_path(filepath):
+                        return _orig_open(file, mode, *args, **kwargs)
 
                     if is_write:
                         if _workspace_dir and not _is_subpath(filepath, _workspace_dir):
-                            raise PermissionError(f"Write denied outside workspace: {filepath}")
+                            raise PermissionError(
+                                "Write denied outside workspace: " + str(filepath) +
+                                ". Write generated files into the workspace (" + _workspace_dir +
+                                ") and declare a 'create' action with the real destination path."
+                            )
                     else:
                         allowed = False
                         if _workspace_dir and _is_subpath(filepath, _workspace_dir):
                             allowed = True
-                        for root in _allowed_roots:
-                            if root and _is_subpath(filepath, root):
-                                allowed = True
-                                break
+                        if not allowed:
+                            for root in _allowed_roots:
+                                if root and _is_subpath(filepath, root):
+                                    allowed = True
+                                    break
                         if _allowed_roots and not allowed:
                             raise PermissionError(f"Read denied outside allowed roots: {filepath}")
                     return _orig_open(file, mode, *args, **kwargs)
@@ -179,6 +258,47 @@ object PythonEngine {
                 builtins.open = _safe_open
                 if 'io' in sys.modules:
                     sys.modules['io'].open = _safe_open
+
+                # builtins.open only covers file content. Mutating calls made straight through
+                # the os module (and therefore shutil, pathlib, tempfile, ...) must respect the
+                # same workspace boundary, otherwise a plan could delete user files while it is
+                # still supposed to be exploring.
+                def _guard_write_path(func_name, filepath):
+                    if _is_infra_path(filepath):
+                        return
+                    if _workspace_dir and not _is_subpath(filepath, _workspace_dir):
+                        raise PermissionError(
+                            func_name + " denied outside workspace: " + str(filepath) +
+                            ". Produce files inside the workspace (" + _workspace_dir +
+                            ") and express changes to real paths as plan actions instead."
+                        )
+
+                def _wrap_os_write(func_name, arg_count=1):
+                    original = getattr(os, func_name, None)
+                    if original is None:
+                        return
+
+                    def wrapper(*args, **kwargs):
+                        for path_arg in args[:arg_count]:
+                            if isinstance(path_arg, int):
+                                continue
+                            try:
+                                candidate = os.fspath(path_arg)
+                            except TypeError:
+                                continue
+                            if isinstance(candidate, bytes):
+                                candidate = os.fsdecode(candidate)
+                            _guard_write_path(func_name, candidate)
+                        return original(*args, **kwargs)
+
+                    wrapper.__name__ = func_name
+                    setattr(os, func_name, wrapper)
+
+                for _fn in ('remove', 'unlink', 'rmdir', 'removedirs', 'mkdir', 'makedirs',
+                            'truncate', 'chmod', 'symlink'):
+                    _wrap_os_write(_fn, 1)
+                for _fn in ('rename', 'renames', 'replace', 'link'):
+                    _wrap_os_write(_fn, 2)
             """.trimIndent())
         }
     }
@@ -231,7 +351,7 @@ object PythonEngine {
         code: String,
         workspaceDir: String? = null,
         allowedReadRoots: List<File> = emptyList(),
-        timeoutMillis: Long = 10_000L,
+        timeoutMillis: Long = 60_000L,
         denyNetwork: Boolean = true
     ): String {
         val normalizedCode = cleanAndNormalizeCode(code)

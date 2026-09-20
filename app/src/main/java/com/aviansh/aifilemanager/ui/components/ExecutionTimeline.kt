@@ -221,6 +221,14 @@ fun ExecutionTimeline(
                             Column {
                                 Text("Execution / Recovery Failure", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 13.sp)
                                 Text(executionState.error, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 12.sp)
+                                failureHint(executionState.error)?.let { hint ->
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = hint,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        fontSize = 11.sp
+                                    )
+                                }
                             }
                         }
                     }
@@ -338,4 +346,31 @@ private fun TimelineCard(
             }
         }
     }
+}
+
+/**
+ * Turns raw agent/sandbox failures into a short, actionable suggestion for the user, so the
+ * error card explains what to do next instead of only showing an internal message.
+ */
+internal fun failureHint(error: String): String? = when {
+    error.contains("reasoning steps", ignoreCase = true) ||
+        error.contains("maximum iterations", ignoreCase = true) ->
+        "Tip: try a narrower request, e.g. name the folder or the specific files to act on."
+
+    error.contains("denied outside workspace", ignoreCase = true) ->
+        "The AI tried to modify a file directly instead of proposing it as an action. Re-run the request; it should propose a plan you can approve."
+
+    error.contains("Read denied", ignoreCase = true) ->
+        "That location is outside your shared storage. Try a path under /storage/emulated/0."
+
+    error.contains("Provider not configured", ignoreCase = true) ->
+        "Open the menu in the top bar to set up Gemini or an OpenAI compatible endpoint."
+
+    error.contains("network", ignoreCase = true) ->
+        "Check your internet connection and the provider endpoint in settings."
+
+    error.contains("quota", ignoreCase = true) || error.contains("429") ->
+        "Your provider rejected the request (rate limit or quota). Wait a moment or switch provider in settings."
+
+    else -> null
 }

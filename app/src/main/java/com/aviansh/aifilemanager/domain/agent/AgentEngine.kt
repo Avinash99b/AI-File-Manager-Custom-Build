@@ -14,7 +14,9 @@ import org.json.JSONObject
 
 class AgentEngine(
     private val llmProvider: LLMProvider,
-    private val customToolRegistry: ToolRegistry? = null
+    private val customToolRegistry: ToolRegistry? = null,
+    private val maxIterations: Int = 12,
+    private val maxConsecutiveToolFailures: Int = 3
 ) {
 
     private val tag = "AgentEngine"
@@ -37,10 +39,18 @@ The absolute path to your isolated workspace is: $workspacePath
 FILESYSTEM ACCESS:
 - You have READ-ONLY access to the entire device filesystem. This app holds the "All files access" permission, so you may read files from any directory (e.g. /storage/emulated/0, /storage/emulated/0/Download, /storage/emulated/0/Pictures).
 - Read ONLY what the task actually needs. Prefer cheap discovery first (e.g. os.listdir, glob) to find the right files before opening anything, and open only the specific files you need. Do NOT recursively dump the contents of whole directories, and do NOT read the full contents of large files when metadata (name, size, type) or a quick check is enough.
-- You MUST NEVER create, modify, move, copy, or delete any file OUTSIDE the workspace.
+- You MUST NEVER create, modify, move, copy, or delete any file OUTSIDE the workspace. The sandbox enforces this: open(..., 'w'), os.remove, os.rename and friends raise PermissionError for paths outside the workspace. That is expected behaviour, NOT a bug to work around — never retry the same write, and never try to defeat the sandbox.
+- You have NO network access. Do not try to download, pip install, or fetch anything.
 
 WORKSPACE RULE:
 - All writes happen for the final plan, never while exploring. If a new file is needed for the plan (generated report, converted image, renamed copy, etc.), you MUST write it into the workspace ($workspacePath) using the PythonExecutor tool, then generate a "create" action whose "source" is that file inside the workspace and whose "destination" is the real absolute path where the user wants the file to appear.
+
+HANDLING ERRORS:
+- If a tool call fails, read the error before acting. Do NOT repeat the identical call.
+- "Write denied outside workspace" / "<op> denied outside workspace" means you targeted a real user path directly. Redo the operation with an output path inside $workspacePath, then express the real destination as a plan action.
+- "Read denied outside allowed roots" means the path is outside shared storage. Pick a path under /storage/emulated/0 instead.
+- If the same approach fails twice, change approach. If the task genuinely cannot be done, return a final_plan with actionable=false that explains the blocker in plain language. An honest explanation is far better than burning every step retrying.
+- All listed libraries are already installed. An ImportError means the library truly is unavailable, so use a different one instead of retrying the import.
 
 PDF TOOLKIT (available Python libraries):
 - READ / EXTRACT TEXT from a PDF: use pypdf, e.g.:
@@ -104,14 +114,30 @@ If no action is needed (e.g., you just answered a question), return:
 }
 """.trimIndent()
 
-        val maxIterations = 5
-        var iterations = 0
         val currentContext = history.toMutableList()
         currentContext.add(ChatLmMessage(ChatLmRole.USER, prompt))
 
+        var iterations = 0
+        var consecutiveToolFailures = 0
+
         while (iterations < maxIterations) {
             iterations++
-            Log.d(tag, "ReAct Loop Iteration $iterations")
+            Log.d(tag, "ReAct Loop Iteration $iterations / $maxIterations")
+
+            // On the last iteration stop offering tools and demand a conclusion, so the run ends
+            // with a usable answer (or an honest explanation) instead of "maximum iterations".
+            val isFinalIteration = iterations == maxIterations
+            if (isFinalIteration) {
+                currentContext.add(
+                    ChatLmMessage(
+                        ChatLmRole.USER,
+                        "You have no tool calls left. Respond NOW with a final_plan JSON object. " +
+                            "If you could not complete the task, return actionable=false and explain " +
+                            "in plain language what you found and what blocked you."
+                    )
+                )
+                onEvent(TimelineEvent.SystemMessage("Tool budget reached — asking the agent to conclude."))
+            }
 
             val response = llmProvider.generate(
                 prompt = currentContext.last().content,
@@ -139,7 +165,20 @@ If no action is needed (e.g., you just answered a question), return:
                             if (tool != null) {
                                 val result = tool.execute(args)
                                 Log.d(tag, "Tool result: ${result.take(100)}...")
-                                currentContext.add(ChatLmMessage(ChatLmRole.USER, "[UNTRUSTED DATA FROM TOOL $toolName]:\n$result"))
+
+                                val failed = result.startsWith("Execution Error:") ||
+                                    result.startsWith("Error executing Python code:")
+                                consecutiveToolFailures = if (failed) consecutiveToolFailures + 1 else 0
+
+                                val hint = if (failed && consecutiveToolFailures >= maxConsecutiveToolFailures) {
+                                    "\n\n[SYSTEM] That approach has failed $consecutiveToolFailures times in a row. " +
+                                        "Stop retrying it. Either solve the task a different way, or return a " +
+                                        "final_plan with actionable=false explaining the blocker to the user."
+                                } else {
+                                    ""
+                                }
+
+                                currentContext.add(ChatLmMessage(ChatLmRole.USER, "[UNTRUSTED DATA FROM TOOL $toolName]:\n$result$hint"))
                                 onEvent(TimelineEvent.ToolCall(toolName, args, result))
                             } else {
                                 val errMsg = "Error: Unknown tool $toolName"
@@ -180,7 +219,12 @@ If no action is needed (e.g., you just answered a question), return:
             }
         }
 
-        Result.failure(Exception("Agent reached maximum iterations without producing a final plan."))
+        Result.failure(
+            Exception(
+                "The agent used all $maxIterations reasoning steps without reaching a conclusion. " +
+                    "Try a more specific request, or narrow it to fewer files."
+            )
+        )
     }
 
     suspend fun verifyAndRepair(

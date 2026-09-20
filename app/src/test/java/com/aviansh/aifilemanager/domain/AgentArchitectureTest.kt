@@ -61,7 +61,11 @@ class AgentArchitectureTest {
 
         val result = engine.processPrompt("do something", workspace, emptyList())
         assertFalse("Iteration exhaustion must return failure", result.isSuccess)
-        assertTrue(result.exceptionOrNull()?.message?.contains("maximum iterations") == true)
+        val message = result.exceptionOrNull()?.message.orEmpty()
+        assertTrue(
+            "Exhaustion message should be actionable for the user, was: $message",
+            message.contains("reasoning steps") && message.contains("more specific")
+        )
     }
 
     @Test
@@ -233,5 +237,125 @@ class AgentArchitectureTest {
         assertTrue("Agent should recover after malformed JSON retry", result.isSuccess)
         assertEquals(2, turn)
         assertEquals("Recovered from malformed JSON", result.getOrNull()?.explanation)
+    }
+
+    @Test
+    fun testRepeatedToolFailures_agentIsToldToStopRetrying() = runBlocking {
+        var turn = 0
+        var sawStopHint = false
+
+        val failingTool = object : AgentTool {
+            override val name: String = "PythonExecutor"
+            override val description: String = "always fails"
+            override suspend fun execute(args: String): String =
+                "Execution Error: PermissionError: Write denied outside workspace: /storage/emulated/0/x.pdf"
+        }
+
+        val mockLlm = object : LLMProvider {
+            override suspend fun generate(
+                prompt: String,
+                systemPrompt: String?,
+                conversation: List<ChatLmMessage>
+            ): LLMGenerationResponse {
+                turn++
+                if (conversation.any { it.content.contains("failed 3 times in a row") } ||
+                    prompt.contains("failed 3 times in a row")
+                ) {
+                    sawStopHint = true
+                    return LLMGenerationResponse.SUCCESS(
+                        """{"type":"final_plan","actionable":false,"explanation":"Cannot write there."}"""
+                    )
+                }
+                return LLMGenerationResponse.SUCCESS(
+                    """{"type":"tool_call","tool":"PythonExecutor","args":"open('/storage/emulated/0/x.pdf','w')"}"""
+                )
+            }
+
+            override fun stream(request: LLMRequest): Flow<LLMStreamEvent> = emptyFlow()
+            override suspend fun test(): Boolean = true
+        }
+
+        val engine = AgentEngine(mockLlm, ToolRegistry(listOf(failingTool)))
+        val workspace = tempFolder.newFolder("workspace").absolutePath
+
+        val result = engine.processPrompt("write a pdf", workspace, emptyList())
+
+        assertTrue("Agent must be nudged to stop retrying a failing approach", sawStopHint)
+        assertTrue("Agent should still finish with a usable answer", result.isSuccess)
+        assertEquals("Cannot write there.", result.getOrNull()?.explanation)
+    }
+
+    @Test
+    fun testLastIteration_forcesConclusionInsteadOfDeadEnd() = runBlocking {
+        var sawConcludeInstruction = false
+
+        val tool = object : AgentTool {
+            override val name: String = "PythonExecutor"
+            override val description: String = "noop"
+            override suspend fun execute(args: String): String = "ok"
+        }
+
+        val mockLlm = object : LLMProvider {
+            override suspend fun generate(
+                prompt: String,
+                systemPrompt: String?,
+                conversation: List<ChatLmMessage>
+            ): LLMGenerationResponse {
+                if (prompt.contains("no tool calls left")) {
+                    sawConcludeInstruction = true
+                    return LLMGenerationResponse.SUCCESS(
+                        """{"type":"final_plan","actionable":false,"explanation":"Here is what I found."}"""
+                    )
+                }
+                return LLMGenerationResponse.SUCCESS(
+                    """{"type":"tool_call","tool":"PythonExecutor","args":"print(1)"}"""
+                )
+            }
+
+            override fun stream(request: LLMRequest): Flow<LLMStreamEvent> = emptyFlow()
+            override suspend fun test(): Boolean = true
+        }
+
+        val engine = AgentEngine(mockLlm, ToolRegistry(listOf(tool)), maxIterations = 3)
+        val workspace = tempFolder.newFolder("workspace").absolutePath
+
+        val result = engine.processPrompt("explore", workspace, emptyList())
+
+        assertTrue("Final iteration must demand a conclusion", sawConcludeInstruction)
+        assertTrue("Run should end with an answer rather than 'maximum iterations'", result.isSuccess)
+        assertEquals("Here is what I found.", result.getOrNull()?.explanation)
+    }
+
+    @Test
+    fun testIterationBudgetIsLargerThanTheOldFiveStepLimit() = runBlocking {
+        var turns = 0
+        val tool = object : AgentTool {
+            override val name: String = "PythonExecutor"
+            override val description: String = "noop"
+            override suspend fun execute(args: String): String = "ok"
+        }
+
+        val mockLlm = object : LLMProvider {
+            override suspend fun generate(
+                prompt: String,
+                systemPrompt: String?,
+                conversation: List<ChatLmMessage>
+            ): LLMGenerationResponse {
+                turns++
+                return LLMGenerationResponse.SUCCESS(
+                    """{"type":"tool_call","tool":"PythonExecutor","args":"print(1)"}"""
+                )
+            }
+
+            override fun stream(request: LLMRequest): Flow<LLMStreamEvent> = emptyFlow()
+            override suspend fun test(): Boolean = true
+        }
+
+        val engine = AgentEngine(mockLlm, ToolRegistry(listOf(tool)))
+        val workspace = tempFolder.newFolder("workspace").absolutePath
+
+        engine.processPrompt("explore", workspace, emptyList())
+
+        assertTrue("Multi-step file tasks need more than 5 steps, got $turns", turns > 5)
     }
 }
