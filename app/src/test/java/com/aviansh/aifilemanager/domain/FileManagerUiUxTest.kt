@@ -1,10 +1,6 @@
 package com.aviansh.aifilemanager.domain
 
-import com.aviansh.aifilemanager.domain.agent.ExecutionPlan
-import com.aviansh.aifilemanager.domain.agent.ExecutionState
 import com.aviansh.aifilemanager.domain.agent.TimelineEvent
-import com.aviansh.aifilemanager.domain.data.FileAction
-import com.aviansh.aifilemanager.domain.data.FileActionType
 import com.aviansh.aifilemanager.domain.prefs.GeminiPreferences
 import com.aviansh.aifilemanager.domain.repository.FileRepository
 import com.aviansh.aifilemanager.domain.repository.GeminiModelRepository
@@ -186,19 +182,24 @@ class FileManagerUiUxTest {
     }
 
     @Test
-    fun testPersistAndRestoreProposedPlanTimelineEvent() = runBlocking {
+    fun testPersistAndRestoreAgentTimeline() = runBlocking {
         val context = RuntimeEnvironment.getApplication()
         val prefs = GeminiPreferences(context)
         val secretStore = InMemorySecretStore()
         val geminiRepo = GeminiModelRepository(prefs, secretStore)
 
-        val plan = ExecutionPlan(
-            actions = listOf(FileAction(FileActionType.DELETE, File(rootDir, "test.txt").absolutePath)),
-            explanation = "Delete test file"
-        )
+        val persistMethod = FileManagerViewModel::class.java
+            .getDeclaredMethod("persistTimeline", List::class.java)
+            .apply { isAccessible = true }
 
-        val persistMethod = FileManagerViewModel::class.java.getDeclaredMethod("persistTimeline", List::class.java).apply { isAccessible = true }
-        persistMethod.invoke(viewModel, listOf(TimelineEvent.UserPrompt("delete test.txt"), TimelineEvent.ProposedPlan(plan)))
+        persistMethod.invoke(
+            viewModel,
+            listOf(
+                TimelineEvent.UserPrompt("delete test.txt"),
+                TimelineEvent.ToolCall("delete", "Delete test.txt", result = "Moved to trash"),
+                TimelineEvent.AgentAnswer("Deleted test.txt and moved it to the trash.")
+            )
+        )
 
         delay(500)
 
@@ -206,12 +207,16 @@ class FileManagerUiUxTest {
         val newViewModel = FileManagerViewModel(fileRepo, geminiRepo)
         delay(500)
 
-        val restoredTimeline = newViewModel.timeline.value
-        assertTrue("Timeline should be restored", restoredTimeline.isNotEmpty())
-        assertTrue("ProposedPlan should be restored in timeline", restoredTimeline.any { it is TimelineEvent.ProposedPlan })
+        val restored = newViewModel.timeline.value
+        assertTrue("Timeline should be restored", restored.isNotEmpty())
+        assertTrue("User prompt should survive", restored.any { it is TimelineEvent.UserPrompt })
 
-        val state = newViewModel.executionState.value
-        assertTrue("ExecutionState should be restored to WaitingForApproval", state is ExecutionState.WaitingForApproval)
-        assertEquals(plan.explanation, (state as ExecutionState.WaitingForApproval).plan.explanation)
+        val toolCall = restored.filterIsInstance<TimelineEvent.ToolCall>().firstOrNull()
+        assertNotNull("Tool call should be restored", toolCall)
+        assertEquals("delete", toolCall!!.toolName)
+        assertEquals("Moved to trash", toolCall.result)
+        assertNull(toolCall.error)
+
+        assertTrue("Answer should survive", restored.any { it is TimelineEvent.AgentAnswer })
     }
 }

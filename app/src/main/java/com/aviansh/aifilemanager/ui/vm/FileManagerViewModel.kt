@@ -8,14 +8,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aviansh.aifilemanager.domain.AppPaths
 import com.aviansh.aifilemanager.domain.agent.*
+import com.aviansh.aifilemanager.domain.agent.tools.*
 import com.aviansh.aifilemanager.domain.data.ChatLmMessage
 import com.aviansh.aifilemanager.domain.data.ChatLmRole
-import com.aviansh.aifilemanager.domain.data.FileAction
-import com.aviansh.aifilemanager.domain.data.FileActionType
+import com.aviansh.aifilemanager.domain.engines.TrashEngine
+import com.aviansh.aifilemanager.domain.engines.TrashedItem
 import com.aviansh.aifilemanager.domain.repository.FileItem
 import com.aviansh.aifilemanager.domain.repository.FileRepository
 import com.aviansh.aifilemanager.domain.repository.AiProviderRepository
-import com.aviansh.aifilemanager.domain.transactions.PlanBinding
+import com.aviansh.aifilemanager.domain.security.FileAccessPolicy
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
@@ -57,6 +58,8 @@ sealed class FileManagerEvent {
     data class FilesMoved(val count: Int) : FileManagerEvent()
     data class FolderCreated(val folderName: String) : FileManagerEvent()
     data class TransactionComplete(val actionCount: Int) : FileManagerEvent()
+    data class FileRestored(val fileName: String) : FileManagerEvent()
+    data class TrashEmptied(val count: Int) : FileManagerEvent()
     data class Error(val message: String) : FileManagerEvent()
 }
 
@@ -98,13 +101,15 @@ class FileManagerViewModel @Inject constructor(
     private val _timeline = MutableStateFlow<List<TimelineEvent>>(emptyList())
     val timeline = _timeline.asStateFlow()
 
-    private val _executionState = MutableStateFlow<ExecutionState>(ExecutionState.Idle)
-    val executionState = _executionState.asStateFlow()
+    private val _agentState = MutableStateFlow<AgentState>(AgentState.Idle)
+    val agentState = _agentState.asStateFlow()
 
-    private val workspaceEngine = WorkspaceEngine()
-    private var currentWorkspacePath: String? = null
+    private val _trashItems = MutableStateFlow<List<TrashedItem>>(emptyList())
+    val trashItems = _trashItems.asStateFlow()
 
     private var currentAgentJob: kotlinx.coroutines.Job? = null
+    private var currentEngine: AgentEngine? = null
+    private var currentSession: AgentEngine.Session? = null
 
     private val chatHistory = mutableListOf<ChatLmMessage>()
 
@@ -117,138 +122,60 @@ class FileManagerViewModel @Inject constructor(
         loadFiles(_uiState.value.currentPath)
     }
 
-    private fun serializeFileAction(action: FileAction): JSONObject {
-        return JSONObject().apply {
-            put("type", action.type.name)
-            put("sourcePath", action.sourcePath)
-            action.destinationPath?.let { put("destinationPath", it) }
-            put("overwrite", action.overwrite)
-            put("comment", action.comment)
-        }
-    }
-
-    private fun deserializeFileAction(obj: JSONObject): FileAction {
-        return FileAction(
-            type = FileActionType.valueOf(obj.getString("type")),
-            sourcePath = obj.getString("sourcePath"),
-            destinationPath = if (obj.has("destinationPath") && !obj.isNull("destinationPath")) obj.getString("destinationPath") else null,
-            overwrite = obj.optBoolean("overwrite", false),
-            comment = obj.optString("comment", "")
-        )
-    }
-
-    private fun serializeExecutionPlan(plan: ExecutionPlan): JSONObject {
-        val json = JSONObject()
-        json.put("explanation", plan.explanation)
-        val actionsArray = JSONArray()
-        plan.actions.forEach { actionsArray.put(serializeFileAction(it)) }
-        json.put("actions", actionsArray)
-        return json
-    }
-
-    private fun deserializeExecutionPlan(obj: JSONObject): ExecutionPlan {
-        val explanation = obj.optString("explanation", "")
-        val actionsArray = obj.optJSONArray("actions") ?: JSONArray()
-        val actions = mutableListOf<FileAction>()
-        for (i in 0 until actionsArray.length()) {
-            actions.add(deserializeFileAction(actionsArray.getJSONObject(i)))
-        }
-        return ExecutionPlan(actions = actions, explanation = explanation)
-    }
-
-    private fun serializeRepairPlan(repairPlan: RepairPlan): JSONObject {
-        val json = JSONObject()
-        json.put("explanation", repairPlan.explanation)
-        val failedArray = JSONArray()
-        repairPlan.failedActions.forEach { failedArray.put(serializeFileAction(it)) }
-        json.put("failedActions", failedArray)
-        val fixesArray = JSONArray()
-        repairPlan.proposedFixes.forEach { fixesArray.put(serializeFileAction(it)) }
-        json.put("proposedFixes", fixesArray)
-        return json
-    }
-
-    private fun deserializeRepairPlan(obj: JSONObject): RepairPlan {
-        val explanation = obj.optString("explanation", "")
-        val failedArray = obj.optJSONArray("failedActions") ?: JSONArray()
-        val failedActions = mutableListOf<FileAction>()
-        for (i in 0 until failedArray.length()) {
-            failedActions.add(deserializeFileAction(failedArray.getJSONObject(i)))
-        }
-        val fixesArray = obj.optJSONArray("proposedFixes") ?: JSONArray()
-        val proposedFixes = mutableListOf<FileAction>()
-        for (i in 0 until fixesArray.length()) {
-            proposedFixes.add(deserializeFileAction(fixesArray.getJSONObject(i)))
-        }
-        return RepairPlan(
-            failedActions = failedActions,
-            proposedFixes = proposedFixes,
-            explanation = explanation
-        )
-    }
-
     private fun loadPersistedTimeline() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val cacheDir = AppPaths.filesDir.ifBlank { System.getProperty("java.io.tmpdir") ?: "/tmp" }
-                val cacheFile = File(cacheDir, "timeline_cache.json")
-                if (cacheFile.exists()) {
-                    val jsonStr = cacheFile.readText(Charsets.UTF_8)
-                    val jsonArray = JSONArray(jsonStr)
-                    val loadedEvents = mutableListOf<TimelineEvent>()
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.getJSONObject(i)
-                        when (obj.optString("type")) {
-                            "UserPrompt" -> loadedEvents.add(TimelineEvent.UserPrompt(obj.getString("text")))
-                            "AgentThought" -> loadedEvents.add(TimelineEvent.AgentThought(obj.getString("text")))
-                            "ToolCall" -> loadedEvents.add(
-                                TimelineEvent.ToolCall(
-                                    obj.getString("toolName"),
-                                    obj.getString("args"),
-                                    if (obj.has("result") && !obj.isNull("result")) obj.getString("result") else null,
-                                    if (obj.has("error") && !obj.isNull("error")) obj.getString("error") else null
-                                )
+                val file = timelineCacheFile()
+                if (!file.exists()) return@launch
+
+                val jsonArray = JSONArray(file.readText(Charsets.UTF_8))
+                val loaded = mutableListOf<TimelineEvent>()
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    when (obj.optString("type")) {
+                        "UserPrompt" -> loaded.add(TimelineEvent.UserPrompt(obj.getString("text")))
+                        "AgentThought" -> loaded.add(TimelineEvent.AgentThought(obj.getString("text")))
+                        "AgentAnswer" -> loaded.add(TimelineEvent.AgentAnswer(obj.getString("text")))
+                        "ToolCall" -> loaded.add(
+                            TimelineEvent.ToolCall(
+                                obj.getString("toolName"),
+                                obj.optString("preview"),
+                                obj.optString("result").takeIf { it.isNotBlank() && !obj.isNull("result") },
+                                obj.optString("error").takeIf { it.isNotBlank() && !obj.isNull("error") }
                             )
-                            "ExecutionLog" -> loadedEvents.add(
-                                TimelineEvent.ExecutionLog(
-                                    obj.getString("message"),
-                                    obj.optBoolean("isError", false)
-                                )
+                        )
+                        "ExecutionLog" -> loaded.add(
+                            TimelineEvent.ExecutionLog(
+                                obj.getString("message"),
+                                obj.optBoolean("isError", false)
                             )
-                            "SystemMessage" -> loadedEvents.add(TimelineEvent.SystemMessage(obj.getString("message")))
-                            "ProposedPlan" -> {
-                                val planObj = obj.getJSONObject("plan")
-                                val plan = deserializeExecutionPlan(planObj)
-                                loadedEvents.add(TimelineEvent.ProposedPlan(plan))
-                            }
-                            "ProposedRepair" -> {
-                                val repairObj = obj.getJSONObject("repairPlan")
-                                val repairPlan = deserializeRepairPlan(repairObj)
-                                loadedEvents.add(TimelineEvent.ProposedRepair(repairPlan))
-                            }
-                        }
-                    }
-                    if (loadedEvents.isNotEmpty()) {
-                        _timeline.value = loadedEvents
-                        val lastEvent = loadedEvents.lastOrNull()
-                        if (lastEvent is TimelineEvent.ProposedPlan) {
-                            _executionState.value = ExecutionState.WaitingForApproval(lastEvent.plan)
-                        } else if (lastEvent is TimelineEvent.ProposedRepair) {
-                            _executionState.value = ExecutionState.WaitingForRepairApproval(lastEvent.repairPlan)
-                        }
+                        )
+                        "SystemMessage" -> loaded.add(TimelineEvent.SystemMessage(obj.getString("message")))
+                        // A pending confirmation cannot be resumed after process death, because
+                        // the agent's in-memory transcript is gone. Surface it as a note instead.
+                        "ConfirmationRequest" -> loaded.add(
+                            TimelineEvent.SystemMessage(
+                                "Previous session ended while awaiting confirmation for: " +
+                                    obj.optString("preview")
+                            )
+                        )
                     }
                 }
+                if (loaded.isNotEmpty()) _timeline.value = loaded
             } catch (e: Exception) {
                 Log.e(tag, "Failed to load timeline cache", e)
             }
         }
     }
 
+    private fun timelineCacheFile(): File {
+        val dir = AppPaths.filesDir.ifBlank { System.getProperty("java.io.tmpdir") ?: "/tmp" }
+        return File(dir, "timeline_cache.json")
+    }
+
     private fun persistTimeline(events: List<TimelineEvent>) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val cacheDir = AppPaths.filesDir.ifBlank { System.getProperty("java.io.tmpdir") ?: "/tmp" }
-                val cacheFile = File(cacheDir, "timeline_cache.json")
                 val jsonArray = JSONArray()
                 events.forEach { event ->
                     val obj = JSONObject()
@@ -261,12 +188,20 @@ class FileManagerViewModel @Inject constructor(
                             obj.put("type", "AgentThought")
                             obj.put("text", event.text)
                         }
+                        is TimelineEvent.AgentAnswer -> {
+                            obj.put("type", "AgentAnswer")
+                            obj.put("text", event.text)
+                        }
                         is TimelineEvent.ToolCall -> {
                             obj.put("type", "ToolCall")
                             obj.put("toolName", event.toolName)
-                            obj.put("args", event.args)
+                            obj.put("preview", event.preview)
                             event.result?.let { obj.put("result", it) }
                             event.error?.let { obj.put("error", it) }
+                        }
+                        is TimelineEvent.ConfirmationRequest -> {
+                            obj.put("type", "ConfirmationRequest")
+                            obj.put("preview", event.action.preview)
                         }
                         is TimelineEvent.ExecutionLog -> {
                             obj.put("type", "ExecutionLog")
@@ -277,18 +212,10 @@ class FileManagerViewModel @Inject constructor(
                             obj.put("type", "SystemMessage")
                             obj.put("message", event.message)
                         }
-                        is TimelineEvent.ProposedPlan -> {
-                            obj.put("type", "ProposedPlan")
-                            obj.put("plan", serializeExecutionPlan(event.plan))
-                        }
-                        is TimelineEvent.ProposedRepair -> {
-                            obj.put("type", "ProposedRepair")
-                            obj.put("repairPlan", serializeRepairPlan(event.repairPlan))
-                        }
                     }
-                    if (obj.length() > 0) jsonArray.put(obj)
+                    jsonArray.put(obj)
                 }
-                cacheFile.writeText(jsonArray.toString(), Charsets.UTF_8)
+                timelineCacheFile().writeText(jsonArray.toString(), Charsets.UTF_8)
             } catch (e: Exception) {
                 Log.e(tag, "Failed to persist timeline cache", e)
             }
@@ -570,286 +497,217 @@ class FileManagerViewModel @Inject constructor(
         }
     }
 
-    // --- Agent Actions ---
+    // --- Agent ---
 
     fun onSubmitPrompt(prompt: String) {
-        if (prompt.isBlank() || _executionState.value !is ExecutionState.Idle && _executionState.value !is ExecutionState.Completed && _executionState.value !is ExecutionState.Failed) return
+        if (prompt.isBlank()) return
+        if (_agentState.value is AgentState.Thinking ||
+            _agentState.value is AgentState.Working ||
+            _agentState.value is AgentState.AwaitingConfirmation
+        ) return
 
         currentAgentJob?.cancel()
         currentAgentJob = viewModelScope.launch {
-            val contextualPrompt = "[ACTIVE DIRECTORY CONTEXT: ${_uiState.value.currentPath}]\n$prompt"
-            _timeline.update { old ->
-                val updated = old + TimelineEvent.UserPrompt(prompt)
-                persistTimeline(updated)
-                updated
-            }
-            _executionState.value = ExecutionState.Planning
+            appendTimeline(TimelineEvent.UserPrompt(prompt))
+            _agentState.value = AgentState.Thinking
 
             val provider = aiProviderRepository.getProvider()
             if (provider == null) {
-                _timeline.update { old ->
-                    val updated = old + TimelineEvent.ExecutionLog(
-                        "AI provider not configured. Open the menu in the top bar and set up Gemini or an OpenAI compatible endpoint.",
+                appendTimeline(
+                    TimelineEvent.ExecutionLog(
+                        "AI provider not configured. Open the menu in the top bar and set up " +
+                            "Gemini or an OpenAI compatible endpoint.",
                         true
                     )
-                    persistTimeline(updated)
-                    updated
-                }
-                _executionState.value = ExecutionState.Failed("Provider not configured")
+                )
+                _agentState.value = AgentState.Failed("Provider not configured")
                 return@launch
             }
 
-            val agentEngine = AgentEngine(provider)
-            val workspacePath = workspaceEngine.setupWorkspace(emptyList())
-            currentWorkspacePath = workspacePath
+            val engine = buildEngine(provider)
+            currentEngine = engine
 
-            val result = agentEngine.processPrompt(contextualPrompt, workspacePath, chatHistory) { event ->
-                _timeline.update { old ->
-                    val updated = old + event
-                    persistTimeline(updated)
-                    updated
-                }
-            }
-
-            result.onSuccess { plan ->
-                val explanation = plan?.explanation ?: "No action needed."
-                chatHistory.add(ChatLmMessage(ChatLmRole.USER, prompt))
-                chatHistory.add(ChatLmMessage(ChatLmRole.ASSISTANT, explanation))
-                chatHistory.trimToLast(MAX_CHAT_HISTORY)
-
-                if (plan != null && plan.actions.isNotEmpty()) {
-                    _timeline.update { old ->
-                        val updated = old + TimelineEvent.ProposedPlan(plan)
-                        persistTimeline(updated)
-                        updated
-                    }
-                    _executionState.value = ExecutionState.WaitingForApproval(plan)
-                } else {
-                    _timeline.update { old ->
-                        val updated = old + TimelineEvent.SystemMessage(explanation)
-                        persistTimeline(updated)
-                        updated
-                    }
-                    _executionState.value = ExecutionState.Completed
-                    workspaceEngine.cleanupWorkspace(workspacePath)
-                }
-            }.onFailure { e ->
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                chatHistory.add(ChatLmMessage(ChatLmRole.USER, prompt))
-                _timeline.update { old ->
-                    val updated = old + TimelineEvent.ExecutionLog("Planning failed: ${e.message}", true)
-                    persistTimeline(updated)
-                    updated
-                }
-                _executionState.value = ExecutionState.Failed(e.message ?: "Unknown error")
-                workspaceEngine.cleanupWorkspace(workspacePath)
-            }
+            val (session, outcome) = engine.start(
+                userPrompt = prompt,
+                currentDirectory = _uiState.value.currentPath,
+                history = chatHistory.toList(),
+                onEvent = ::onAgentEvent
+            )
+            currentSession = session
+            handleOutcome(prompt, outcome)
         }
     }
 
-    fun onApprovePlan(plan: ExecutionPlan) {
-        val currentState = _executionState.value
-        if (currentState !is ExecutionState.WaitingForApproval) {
-            viewModelScope.launch {
-                _events.emit(FileManagerEvent.Error("Invalid state for approval."))
-            }
-            return
-        }
-
-        val expectedHash = PlanBinding(currentState.plan.actions, currentState.plan.explanation).planHash
-        val approvedHash = PlanBinding(plan.actions, plan.explanation).planHash
-
-        if (expectedHash != approvedHash) {
-            viewModelScope.launch {
-                val msg = "Plan hash mismatch: cannot approve a modified or stale plan."
-                _timeline.update { old ->
-                    val updated = old + TimelineEvent.ExecutionLog(msg, isError = true)
-                    persistTimeline(updated)
-                    updated
-                }
-                _events.emit(FileManagerEvent.Error(msg))
-                _executionState.value = ExecutionState.Failed(msg)
-            }
+    /** User approved or declined the pending destructive tool call. */
+    fun onConfirmAction(approved: Boolean) {
+        val engine = currentEngine
+        val session = currentSession
+        if (engine == null || session == null || _agentState.value !is AgentState.AwaitingConfirmation) {
+            viewModelScope.launch { _events.emit(FileManagerEvent.Error("Nothing is awaiting confirmation.")) }
             return
         }
 
         currentAgentJob?.cancel()
         currentAgentJob = viewModelScope.launch {
-            _executionState.value = ExecutionState.Executing
-            _timeline.update { old ->
-                val updated = old + TimelineEvent.SystemMessage("Executing plan...")
-                persistTimeline(updated)
-                updated
+            _agentState.value = AgentState.Thinking
+            val outcome = engine.resume(
+                session = session,
+                currentDirectory = _uiState.value.currentPath,
+                approved = approved,
+                onEvent = ::onAgentEvent
+            )
+            handleOutcome(session.userPrompt, outcome)
+        }
+    }
+
+    private fun buildEngine(provider: com.aviansh.aifilemanager.domain.ai.LLMProvider): AgentEngine {
+        val policy = FileAccessPolicy()
+        val scratch = File(
+            AppPaths.cacheDir.ifBlank { System.getProperty("java.io.tmpdir") ?: "/tmp" },
+            "agent_scratch"
+        ).apply { mkdirs() }.absolutePath
+
+        return AgentEngine(
+            llmProvider = provider,
+            toolRegistry = ToolRegistry(
+                listOf(
+                    ListDirectoryTool(policy),
+                    ReadFileTool(policy),
+                    FileInfoTool(policy),
+                    SearchFilesTool(policy),
+                    CreateFolderTool(policy),
+                    WriteFileTool(policy),
+                    CopyTool(policy),
+                    MoveTool(policy),
+                    DeleteTool(policy),
+                    RunPythonTool(policy, scratch)
+                )
+            )
+        )
+    }
+
+    private suspend fun onAgentEvent(event: TimelineEvent) {
+        when (event) {
+            is TimelineEvent.ToolCall -> {
+                if (event.result == null && event.error == null) {
+                    _agentState.value = AgentState.Working(event.toolName, event.preview)
+                    appendTimeline(event)
+                } else {
+                    // Replace the in-flight entry with its finished form.
+                    replaceLastToolCall(event)
+                    if (event.error == null) refreshCurrentDirectory()
+                }
             }
 
-            val result = workspaceEngine.commitWorkspace(plan.actions)
-            result.onSuccess {
-                _timeline.update { old ->
-                    val updated = old + TimelineEvent.ExecutionLog("Plan executed successfully.", false)
-                    persistTimeline(updated)
-                    updated
-                }
-                _executionState.value = ExecutionState.Completed
-                _events.emit(FileManagerEvent.TransactionComplete(plan.actions.size))
-                loadFiles(_uiState.value.currentPath)
+            is TimelineEvent.ConfirmationRequest -> {
+                _agentState.value = AgentState.AwaitingConfirmation(event.action)
+                appendTimeline(event)
+            }
 
-                currentWorkspacePath?.let { workspaceEngine.cleanupWorkspace(it) }
-                currentWorkspacePath = null
-            }.onFailure { e ->
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                _timeline.update { old ->
-                    val updated = old + TimelineEvent.ExecutionLog("Execution failed: ${e.message}", true)
-                    persistTimeline(updated)
-                    updated
-                }
-                _executionState.value = ExecutionState.Verifying
-                generateRepairPlan(plan, e.message ?: "Unknown error")
+            else -> appendTimeline(event)
+        }
+    }
+
+    private suspend fun handleOutcome(prompt: String, outcome: AgentOutcome) {
+        when (outcome) {
+            is AgentOutcome.Answer -> {
+                chatHistory.add(ChatLmMessage(ChatLmRole.USER, prompt))
+                chatHistory.add(ChatLmMessage(ChatLmRole.ASSISTANT, outcome.text))
+                chatHistory.trimToLast(MAX_CHAT_HISTORY)
+                _agentState.value = AgentState.Done(outcome.text)
+                currentSession = null
+                refreshCurrentDirectory()
+            }
+
+            is AgentOutcome.NeedsConfirmation -> {
+                // State already set by the event callback; nothing more to do until the user acts.
+                _agentState.value = AgentState.AwaitingConfirmation(outcome.action)
+            }
+
+            is AgentOutcome.Failed -> {
+                appendTimeline(TimelineEvent.ExecutionLog(outcome.error, isError = true))
+                _agentState.value = AgentState.Failed(outcome.error)
+                currentSession = null
+                refreshCurrentDirectory()
             }
         }
     }
 
-    private suspend fun generateRepairPlan(failedPlan: ExecutionPlan, errorLog: String) {
+    private fun refreshCurrentDirectory() {
+        loadFiles(_uiState.value.currentPath)
+    }
+
+    private fun appendTimeline(event: TimelineEvent) {
         _timeline.update { old ->
-            val updated = old + TimelineEvent.SystemMessage("Generating repair plan...")
+            val updated = old + event
             persistTimeline(updated)
             updated
         }
-        val provider = aiProviderRepository.getProvider()
-        if (provider == null) {
-            _executionState.value = ExecutionState.Failed("Provider not configured for repair.")
-            return
-        }
-        val agentEngine = AgentEngine(provider)
-        val repairResult = agentEngine.verifyAndRepair(failedPlan.actions, errorLog, currentWorkspacePath ?: "")
+    }
 
-        repairResult.onSuccess { repairPlan ->
-            if (repairPlan != null) {
-                _timeline.update { old ->
-                    val updated = old + TimelineEvent.ProposedRepair(repairPlan)
-                    persistTimeline(updated)
-                    updated
-                }
-                _executionState.value = ExecutionState.WaitingForRepairApproval(repairPlan)
+    private fun replaceLastToolCall(finished: TimelineEvent.ToolCall) {
+        _timeline.update { old ->
+            val index = old.indexOfLast {
+                it is TimelineEvent.ToolCall && it.result == null && it.error == null &&
+                    it.toolName == finished.toolName
+            }
+            val updated = if (index >= 0) {
+                old.toMutableList().apply { set(index, finished) }
             } else {
-                _timeline.update { old ->
-                    val updated = old + TimelineEvent.SystemMessage("Could not generate a repair plan.")
-                    persistTimeline(updated)
-                    updated
-                }
-                _executionState.value = ExecutionState.Failed("Irreparable failure.")
-                onHardStop()
+                old + finished
             }
-        }.onFailure {
-            if (it is kotlinx.coroutines.CancellationException) throw it
-            _timeline.update { ev ->
-                val updated = ev + TimelineEvent.ExecutionLog("Repair planning failed: ${it.message}", true)
-                persistTimeline(updated)
-                updated
-            }
-            _executionState.value = ExecutionState.Failed("Repair planning failed.")
-            onHardStop()
+            persistTimeline(updated)
+            updated
         }
     }
 
-    fun onApproveRepairPlan(repairPlan: RepairPlan) {
-        val currentState = _executionState.value
-        if (currentState !is ExecutionState.WaitingForRepairApproval) {
-            viewModelScope.launch {
-                _events.emit(FileManagerEvent.Error("Invalid state for repair approval."))
-            }
-            return
-        }
+    // --- Trash ---
 
-        val expectedHash = PlanBinding(currentState.repairPlan.proposedFixes, currentState.repairPlan.explanation).planHash
-        val approvedHash = PlanBinding(repairPlan.proposedFixes, repairPlan.explanation).planHash
-
-        if (expectedHash != approvedHash) {
-            viewModelScope.launch {
-                val msg = "Repair plan hash mismatch: cannot approve a modified or stale repair plan."
-                _timeline.update { old ->
-                    val updated = old + TimelineEvent.ExecutionLog(msg, isError = true)
-                    persistTimeline(updated)
-                    updated
-                }
-                _events.emit(FileManagerEvent.Error(msg))
-                _executionState.value = ExecutionState.Failed(msg)
-            }
-            return
-        }
-
-        currentAgentJob?.cancel()
-        currentAgentJob = viewModelScope.launch {
-            _executionState.value = ExecutionState.Executing
-            _timeline.update { old ->
-                val updated = old + TimelineEvent.SystemMessage("Executing repair plan...")
-                persistTimeline(updated)
-                updated
-            }
-
-            val result = workspaceEngine.commitWorkspace(repairPlan.proposedFixes)
-            result.onSuccess {
-                _timeline.update { old ->
-                    val updated = old + TimelineEvent.ExecutionLog("Repair executed successfully.", false)
-                    persistTimeline(updated)
-                    updated
-                }
-                _executionState.value = ExecutionState.Completed
-                _events.emit(FileManagerEvent.TransactionComplete(repairPlan.proposedFixes.size))
-                loadFiles(_uiState.value.currentPath)
-
-                currentWorkspacePath?.let { workspaceEngine.cleanupWorkspace(it) }
-                currentWorkspacePath = null
-            }.onFailure { e ->
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                _timeline.update { old ->
-                    val updated = old + TimelineEvent.ExecutionLog("Repair execution failed: ${e.message}", true)
-                    persistTimeline(updated)
-                    updated
-                }
-                _executionState.value = ExecutionState.Failed("Repair failed: ${e.message}")
-                onHardStop()
-            }
-        }
-    }
-
-    fun onSoftStop() {
-        currentAgentJob?.cancel()
+    fun loadTrash() {
         viewModelScope.launch {
-            _timeline.update { old ->
-                val updated = old + TimelineEvent.SystemMessage("Soft stop requested. Discarding workspace.")
-                persistTimeline(updated)
-                updated
-            }
-            currentWorkspacePath?.let { workspaceEngine.cleanupWorkspace(it) }
-            currentWorkspacePath = null
-            _executionState.value = ExecutionState.Idle
-            loadFiles(_uiState.value.currentPath)
+            _trashItems.value = TrashEngine.list()
         }
     }
 
-    fun onHardStop() {
-        currentAgentJob?.cancel()
+    fun restoreFromTrash(id: String) {
         viewModelScope.launch {
-            _timeline.update { old ->
-                val updated = old + TimelineEvent.SystemMessage("Hard stop requested. Aborting immediately.")
-                persistTimeline(updated)
-                updated
-            }
-            currentWorkspacePath?.let { workspaceEngine.cleanupWorkspace(it) }
-            currentWorkspacePath = null
-            _executionState.value = ExecutionState.Idle
+            TrashEngine.restore(id).fold(
+                onSuccess = {
+                    _events.emit(FileManagerEvent.FileRestored(it.name))
+                    loadTrash()
+                    refreshCurrentDirectory()
+                },
+                onFailure = { _events.emit(FileManagerEvent.Error(it.message ?: "Restore failed")) }
+            )
+        }
+    }
+
+    fun emptyTrash() {
+        viewModelScope.launch {
+            val count = TrashEngine.empty()
+            _events.emit(FileManagerEvent.TrashEmptied(count))
+            loadTrash()
+        }
+    }
+
+    fun onStop() {
+        currentAgentJob?.cancel()
+        currentSession = null
+        viewModelScope.launch {
+            appendTimeline(TimelineEvent.SystemMessage("Stopped."))
+            _agentState.value = AgentState.Idle
+            refreshCurrentDirectory()
         }
     }
 
     fun onClearSession() {
         currentAgentJob?.cancel()
+        currentSession = null
         viewModelScope.launch {
-            currentWorkspacePath?.let { workspaceEngine.cleanupWorkspace(it) }
-            currentWorkspacePath = null
             _timeline.value = emptyList()
             persistTimeline(emptyList())
             chatHistory.clear()
-            _executionState.value = ExecutionState.Idle
+            _agentState.value = AgentState.Idle
         }
     }
 }

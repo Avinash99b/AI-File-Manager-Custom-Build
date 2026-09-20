@@ -103,10 +103,10 @@ class PythonSandboxPolicyTest {
     fun denialMessagesTellTheAgentWhatToDoInstead() {
         val setup = setup()
         assertTrue(
-            "Errors must steer the agent to the workspace + plan-action pattern",
-            setup.contains("declare a 'create' action with the real destination path")
+            "Errors must steer the agent to the real file tools",
+            setup.contains("use the write_file, move, copy or delete tool instead")
         )
-        assertTrue(setup.contains("express changes to real paths as plan actions instead"))
+        assertTrue(setup.contains("Use the write_file, move, copy or delete tool for real files."))
     }
 
     @Test

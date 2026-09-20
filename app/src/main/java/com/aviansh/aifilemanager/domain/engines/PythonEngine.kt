@@ -2,12 +2,9 @@ package com.aviansh.aifilemanager.domain.engines
 
 import android.util.Log
 import com.aviansh.aifilemanager.domain.AppPaths
-import com.aviansh.aifilemanager.domain.data.FileAction
-import com.aviansh.aifilemanager.domain.data.FileActionType
 import com.aviansh.aifilemanager.domain.sandbox.PythonExecutionRequest
 import com.chaquo.python.PyObject
 import com.chaquo.python.Python
-import org.json.JSONArray
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -17,9 +14,6 @@ import java.util.concurrent.TimeoutException
 object PythonEngine {
 
     private const val TAG = "PythonEngine"
-
-    /** Marks the single line of stdout that carries the generated action list. */
-    private const val RESULT_MARKER = "__AIFM_ACTIONS__"
     private val executor = Executors.newCachedThreadPool()
 
     /**
@@ -242,8 +236,8 @@ object PythonEngine {
                         if _workspace_dir and not _is_subpath(filepath, _workspace_dir):
                             raise PermissionError(
                                 "Write denied outside workspace: " + str(filepath) +
-                                ". Write generated files into the workspace (" + _workspace_dir +
-                                ") and declare a 'create' action with the real destination path."
+                                ". run_python may only write inside its scratch workspace (" + _workspace_dir +
+                                "). To change a real file, use the write_file, move, copy or delete tool instead."
                             )
                     else:
                         allowed = False
@@ -264,16 +258,16 @@ object PythonEngine {
 
                 # builtins.open only covers file content. Mutating calls made straight through
                 # the os module (and therefore shutil, pathlib, tempfile, ...) must respect the
-                # same workspace boundary, otherwise a plan could delete user files while it is
-                # still supposed to be exploring.
+                # same workspace boundary, otherwise run_python could delete user files without
+                # passing through the confirmed, trash-backed file tools.
                 def _guard_write_path(func_name, filepath):
                     if _is_infra_path(filepath):
                         return
                     if _workspace_dir and not _is_subpath(filepath, _workspace_dir):
                         raise PermissionError(
                             func_name + " denied outside workspace: " + str(filepath) +
-                            ". Produce files inside the workspace (" + _workspace_dir +
-                            ") and express changes to real paths as plan actions instead."
+                            ". run_python may only modify its scratch workspace (" + _workspace_dir +
+                            "). Use the write_file, move, copy or delete tool for real files."
                         )
 
                 def _wrap_os_write(func_name, arg_count=1):
@@ -346,115 +340,4 @@ object PythonEngine {
         return "$truncated\n[OUTPUT TRUNCATED to $maxBytes bytes]"
     }
 
-    /**
-     * Executes generator code expecting a generate() function that returns a JSON string.
-     * Hardened through PythonExecutionRequest policy.
-     */
-    fun executeGeneratorCode(
-        code: String,
-        workspaceDir: String? = null,
-        allowedReadRoots: List<File> = emptyList(),
-        timeoutMillis: Long = 60_000L,
-        denyNetwork: Boolean = true
-    ): String {
-        val normalizedCode = cleanAndNormalizeCode(code)
-
-        // generate() may legitimately return either a Python list of dicts or an already
-        // JSON-encoded string. Blindly calling json.dumps() double-encoded the latter into a
-        // quoted string, which then failed to parse as a JSON array. Normalize both shapes here.
-        val runner = """
-            |import json as _json
-            |_result = generate()
-            |if isinstance(_result, (str, bytes, bytearray)):
-            |    _text = _result.decode() if isinstance(_result, (bytes, bytearray)) else _result
-            |    _parsed = _json.loads(_text)
-            |else:
-            |    _parsed = _result
-            |while isinstance(_parsed, str):
-            |    _parsed = _json.loads(_parsed)
-            |if isinstance(_parsed, dict):
-            |    _parsed = [_parsed]
-            |if _parsed is None:
-            |    _parsed = []
-            |if not isinstance(_parsed, list):
-            |    raise TypeError(
-            |        "generate() must return a list of action objects, got " + type(_parsed).__name__
-            |    )
-            |print("$RESULT_MARKER" + _json.dumps(_parsed))
-        """.trimMargin()
-
-        val request = PythonExecutionRequest(
-            code = "$normalizedCode\n$runner",
-            workspaceDir = workspaceDir,
-            allowedReadRoots = allowedReadRoots,
-            timeoutMillis = timeoutMillis,
-            denyNetwork = denyNetwork
-        )
-        val output = execute(request)
-        if (output.startsWith("Execution Error:") || output.startsWith("JVM Sandbox Stub:")) {
-            throw IllegalStateException(output)
-        }
-
-        // Anything generate() printed for its own debugging is ignored; only the marked line
-        // is treated as the result, so a stray print() no longer corrupts the plan.
-        val jsonLine = output.lineSequence()
-            .map(String::trim)
-            .lastOrNull { it.startsWith(RESULT_MARKER) }
-            ?.removePrefix(RESULT_MARKER)
-            ?: throw IllegalStateException(
-                "generate() produced no action list. Output was: ${output.take(400)}"
-            )
-
-        try {
-            JSONArray(jsonLine)
-        } catch (e: Exception) {
-            throw IllegalStateException(
-                "generate() must return a list of action objects. Got: ${jsonLine.take(200)}",
-                e
-            )
-        }
-
-        return jsonLine
-    }
-
-    fun generateMessage(generatorCode: String): String = executeGeneratorCode(generatorCode)
-
-    fun generateActions(generatorCode: String, workspaceDir: String? = null): List<FileAction> {
-        val json = executeGeneratorCode(generatorCode, workspaceDir)
-
-        val arr = JSONArray(json)
-        return (0 until arr.length()).map { i ->
-            val obj = arr.getJSONObject(i)
-            val type = when (obj.getString("action").lowercase()) {
-                "move"   -> FileActionType.MOVE
-                "copy"   -> FileActionType.COPY
-                "delete" -> FileActionType.DELETE
-                "create" -> FileActionType.CREATE
-                else     -> throw IllegalArgumentException(
-                    "Unknown action: ${obj.getString("action")}"
-                )
-            }
-            // obj.getString("destination") returns the literal text "null" for a JSON null,
-            // which would later be treated as a real path. isNull() is the correct check.
-            val destination = if (obj.has("destination") && !obj.isNull("destination")) {
-                obj.getString("destination").takeIf { it.isNotBlank() }
-            } else {
-                null
-            }
-
-            FileAction(
-                type = type,
-                sourcePath = obj.getString("source"),
-                destinationPath = destination,
-                overwrite = obj.optBoolean("overwrite", false)
-            ).also { action ->
-                if (action.destinationPath.isNullOrBlank() && type != FileActionType.DELETE) {
-                    throw IllegalArgumentException(
-                        "Action of type ${obj.getString("action")} requires a non-null 'destination' " +
-                            "(got: ${obj.toString()})"
-                    )
-                }
-            }
-        }
-    }
 }

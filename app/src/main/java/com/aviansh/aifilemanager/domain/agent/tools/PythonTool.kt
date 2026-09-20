@@ -1,57 +1,63 @@
 package com.aviansh.aifilemanager.domain.agent.tools
 
-import android.os.Environment
 import com.aviansh.aifilemanager.domain.agent.AgentTool
-import com.aviansh.aifilemanager.domain.agent.ToolDefinition
+import com.aviansh.aifilemanager.domain.agent.ToolParam
+import com.aviansh.aifilemanager.domain.agent.ToolResult
+import com.aviansh.aifilemanager.domain.agent.ToolSpec
 import com.aviansh.aifilemanager.domain.engines.PythonEngine
+import com.aviansh.aifilemanager.domain.security.FileAccessPolicy
 import com.aviansh.aifilemanager.domain.transactions.RiskLevel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 
-class PythonTool(
-    private val workspaceDir: String,
-    private val allowedReadRoots: List<File> = defaultReadRoots()
+/**
+ * Python as a capability tool rather than the plan generator.
+ *
+ * It exists for things the native tools cannot express — extracting PDF text, converting images,
+ * parsing spreadsheets, computing statistics. It is READ-ONLY with respect to user storage:
+ * anything it produces is written to a scratch directory, and the agent then uses the normal
+ * file tools (move/copy) to place the result, so every mutation goes through the same
+ * confirmation and trash safety net.
+ */
+class RunPythonTool(
+    private val policy: FileAccessPolicy,
+    private val scratchDir: String
 ) : AgentTool {
 
-    companion object {
-        /**
-         * The agent is allowed to read anywhere the user can see their own files. Reads are
-         * restricted to shared storage; app-private data and system paths stay off limits.
-         */
-        fun defaultReadRoots(): List<File> = buildList {
-            try {
-                add(Environment.getExternalStorageDirectory())
-            } catch (_: Exception) {
-                // Unit tests / non-Android runtimes
-            }
-        }
-    }
-
-    override val name: String = "PythonExecutor"
-
-    override val description: String =
-        "Executes Python code. It runs with its working directory set to the isolated workspace " +
-            "and may READ any file under shared storage (e.g. /storage/emulated/0). " +
-            "It may only WRITE inside the workspace — writing, deleting or renaming anything " +
-            "outside the workspace is rejected, so express those changes as plan actions instead."
-
-    override val definition: ToolDefinition = ToolDefinition(
-        name = name,
-        description = description,
-        argsSchema = "A string containing the python script to run.",
+    override val spec = ToolSpec(
+        name = "run_python",
+        description = "Runs Python for analysis or file conversion (pypdf, Pillow, pandas, openpyxl, " +
+            "reportlab are available). It can READ any file in shared storage but may only WRITE " +
+            "into the scratch directory: $scratchDir. Print the result you want to see. " +
+            "To place a produced file for the user, afterwards call move or copy.",
+        params = listOf(
+            ToolParam("code", "string", "Python source to execute. Use print() to return output.")
+        ),
         riskLevel = RiskLevel.MODERATE
     )
 
-    override suspend fun execute(args: String): String = withContext(Dispatchers.IO) {
-        try {
-            PythonEngine.executeArbitraryCode(
-                code = args,
-                workspaceDir = workspaceDir,
-                allowedReadRoots = allowedReadRoots
-            )
-        } catch (e: Exception) {
-            "Error executing Python code: ${e.message}"
+    override fun previewFor(args: JSONObject): String =
+        "Run Python (${args.optString("code").lines().size} lines)"
+
+    override suspend fun execute(args: JSONObject): ToolResult = withContext(Dispatchers.IO) {
+        val code = args.optString("code")
+        if (code.isBlank()) return@withContext ToolResult.Failure("Missing required argument 'code'")
+
+        File(scratchDir).mkdirs()
+
+        val output = PythonEngine.executeArbitraryCode(
+            code = code,
+            workspaceDir = scratchDir,
+            allowedReadRoots = FileAccessPolicy.defaultAllowedRoots()
+        )
+
+        if (output.startsWith("Execution Error:")) {
+            ToolResult.Failure(output.removePrefix("Execution Error:").trim())
+        } else {
+            val shown = output.ifBlank { "(no output — remember to print() what you need)" }
+            ToolResult.Success(shown, "Ran Python")
         }
     }
 }

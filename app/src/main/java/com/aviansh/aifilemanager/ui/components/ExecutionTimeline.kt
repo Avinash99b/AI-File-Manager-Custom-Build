@@ -6,7 +6,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Assignment
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,32 +16,27 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.aviansh.aifilemanager.domain.agent.ExecutionState
+import com.aviansh.aifilemanager.domain.agent.AgentState
 import com.aviansh.aifilemanager.domain.agent.TimelineEvent
-import com.aviansh.aifilemanager.domain.agent.WorkspaceEngine
 
 @Composable
 fun ExecutionTimeline(
     timeline: List<TimelineEvent>,
-    executionState: ExecutionState,
-    onApprovePlan: () -> Unit,
-    onSoftStop: () -> Unit,
-    onHardStop: () -> Unit,
-    onApproveRepairPlan: () -> Unit,
+    agentState: AgentState,
+    onConfirmAction: (Boolean) -> Unit,
+    onStop: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
     val context = LocalContext.current
 
-    // Check system setting for reduced motion preference
     val isReducedMotion = remember(context) {
         try {
-            val animScale = Settings.Global.getFloat(
+            Settings.Global.getFloat(
                 context.contentResolver,
                 Settings.Global.TRANSITION_ANIMATION_SCALE,
                 1f
-            )
-            animScale == 0f
+            ) == 0f
         } catch (e: Exception) {
             false
         }
@@ -50,12 +44,8 @@ fun ExecutionTimeline(
 
     LaunchedEffect(timeline.size) {
         if (timeline.isNotEmpty()) {
-            val targetIndex = timeline.size - 1
-            if (isReducedMotion) {
-                listState.scrollToItem(targetIndex)
-            } else {
-                listState.animateScrollToItem(targetIndex)
-            }
+            val target = timeline.size - 1
+            if (isReducedMotion) listState.scrollToItem(target) else listState.animateScrollToItem(target)
         }
     }
 
@@ -70,111 +60,105 @@ fun ExecutionTimeline(
         ) {
             items(timeline) { event ->
                 when (event) {
-                    is TimelineEvent.UserPrompt -> {
-                        TimelineCard(
-                            badgeText = "[PROMPT]",
-                            title = "User Prompt",
-                            content = event.text,
-                            icon = Icons.Default.Person,
-                            iconDescription = "User prompt icon",
-                            containerColor = MaterialTheme.colorScheme.primaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                    }
-                    is TimelineEvent.AgentThought -> {
-                        TimelineCard(
-                            badgeText = "[STATUS]",
-                            title = "Status",
-                            content = "Analyzing workspace and planning workflow...",
-                            icon = Icons.Default.Psychology,
-                            iconDescription = "Agent reasoning status icon",
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    is TimelineEvent.UserPrompt -> TimelineCard(
+                        badgeText = "[YOU]",
+                        title = "You asked",
+                        content = event.text,
+                        icon = Icons.Default.Person,
+                        iconDescription = "Your message",
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+
+                    is TimelineEvent.AgentThought -> TimelineCard(
+                        badgeText = "[THINKING]",
+                        title = "Agent",
+                        content = event.text,
+                        icon = Icons.Default.Psychology,
+                        iconDescription = "Agent reasoning",
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
                     is TimelineEvent.ToolCall -> {
+                        val running = event.result == null && event.error == null
+                        val failed = event.error != null
                         TimelineCard(
-                            badgeText = "[TOOL]",
-                            title = "Tool Call: ${event.toolName}",
-                            content = "Args: ${event.args.take(120)}\nResult: ${event.result?.take(250) ?: event.error ?: "Pending"}",
-                            icon = Icons.Default.Build,
-                            iconDescription = "Tool execution icon",
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-                    }
-                    is TimelineEvent.ExecutionLog -> {
-                        val isErr = event.isError
-                        val color = if (isErr) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.tertiaryContainer
-                        val contentColor = if (isErr) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onTertiaryContainer
-                        TimelineCard(
-                            badgeText = if (isErr) "[ERROR]" else "[LOG]",
-                            title = if (isErr) "Error Log" else "Execution Log",
-                            content = event.message,
-                            icon = if (isErr) Icons.Default.Error else Icons.Default.Info,
-                            iconDescription = if (isErr) "Error log icon" else "Execution log icon",
-                            containerColor = color,
-                            contentColor = contentColor
-                        )
-                    }
-                    is TimelineEvent.SystemMessage -> {
-                        TimelineCard(
-                            badgeText = "[SYSTEM]",
-                            title = "System Message",
-                            content = event.message,
-                            icon = Icons.Default.Info,
-                            iconDescription = "System message icon",
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            contentColor = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                    is TimelineEvent.ProposedPlan -> {
-                        val preflight = WorkspaceEngine().preflight(event.plan.actions)
-                        val riskBreakdown = preflight.actionsByRisk.entries
-                            .filter { it.value > 0 }
-                            .joinToString(", ") { "${it.key.name}: ${it.value}" }
-                        val pathsText = if (preflight.affectedPaths.size <= 3) {
-                            preflight.affectedPaths.joinToString("\n")
-                        } else {
-                            preflight.affectedPaths.take(3).joinToString("\n") + "\n+${preflight.affectedPaths.size - 3} more path(s)"
-                        }
-                        val content = buildString {
-                            appendLine("Explanation: ${event.plan.explanation}")
-                            appendLine("Risk Breakdown: $riskBreakdown")
-                            if (preflight.conflictsCount > 0) {
-                                appendLine("⚠️ Conflicts: ${preflight.conflictsCount} destination file(s) already exist")
+                            badgeText = when {
+                                running -> "[RUNNING]"
+                                failed -> "[FAILED]"
+                                else -> "[DONE]"
+                            },
+                            title = event.preview.ifBlank { event.toolName },
+                            content = when {
+                                running -> "Working…"
+                                failed -> event.error.orEmpty()
+                                else -> event.result.orEmpty()
+                            },
+                            icon = when {
+                                running -> Icons.Default.Autorenew
+                                failed -> Icons.Default.ErrorOutline
+                                else -> Icons.Default.CheckCircle
+                            },
+                            iconDescription = "Tool ${event.toolName}",
+                            containerColor = when {
+                                failed -> MaterialTheme.colorScheme.errorContainer
+                                running -> MaterialTheme.colorScheme.surfaceVariant
+                                else -> MaterialTheme.colorScheme.secondaryContainer
+                            },
+                            contentColor = when {
+                                failed -> MaterialTheme.colorScheme.onErrorContainer
+                                running -> MaterialTheme.colorScheme.onSurfaceVariant
+                                else -> MaterialTheme.colorScheme.onSecondaryContainer
                             }
-                            appendLine("Total Actions: ${event.plan.actions.size}")
-                            if (pathsText.isNotBlank()) {
-                                appendLine("\nAffected Paths:\n$pathsText")
-                            }
-                        }
-                        TimelineCard(
-                            badgeText = if (preflight.conflictsCount > 0) "[CONFLICT PLAN]" else "[PROPOSED PLAN]",
-                            title = "Proposed Plan",
-                            content = content.trim(),
-                            icon = if (preflight.conflictsCount > 0) Icons.Default.Warning else Icons.AutoMirrored.Filled.Assignment,
-                            iconDescription = "Proposed execution plan icon",
-                            containerColor = if (preflight.conflictsCount > 0) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f) else MaterialTheme.colorScheme.surfaceVariant,
-                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    is TimelineEvent.ProposedRepair -> {
-                        TimelineCard(
-                            badgeText = "[REPAIR PLAN]",
-                            title = "Proposed Repair Plan",
-                            content = "Explanation: ${event.repairPlan.explanation}\nFixes: ${event.repairPlan.proposedFixes.size} action(s)",
-                            icon = Icons.Default.BuildCircle,
-                            iconDescription = "Repair plan icon",
-                            containerColor = MaterialTheme.colorScheme.errorContainer,
-                            contentColor = MaterialTheme.colorScheme.onErrorContainer
-                        )
-                    }
+
+                    is TimelineEvent.ConfirmationRequest -> TimelineCard(
+                        badgeText = "[NEEDS YOU]",
+                        title = "Confirmation requested",
+                        content = event.action.preview,
+                        icon = Icons.Default.Warning,
+                        iconDescription = "Confirmation required",
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+
+                    is TimelineEvent.AgentAnswer -> TimelineCard(
+                        badgeText = "[ANSWER]",
+                        title = "Agent",
+                        content = event.text,
+                        icon = Icons.Default.AutoAwesome,
+                        iconDescription = "Agent answer",
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+
+                    is TimelineEvent.ExecutionLog -> TimelineCard(
+                        badgeText = if (event.isError) "[ERROR]" else "[LOG]",
+                        title = if (event.isError) "Error" else "Log",
+                        content = event.message,
+                        icon = if (event.isError) Icons.Default.Error else Icons.Default.Info,
+                        iconDescription = if (event.isError) "Error" else "Log",
+                        containerColor = if (event.isError) MaterialTheme.colorScheme.errorContainer
+                        else MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = if (event.isError) MaterialTheme.colorScheme.onErrorContainer
+                        else MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+
+                    is TimelineEvent.SystemMessage -> TimelineCard(
+                        badgeText = "[SYSTEM]",
+                        title = "System",
+                        content = event.message,
+                        icon = Icons.Default.Info,
+                        iconDescription = "System message",
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    )
                 }
             }
         }
 
-        // Action / Conflict / Failure Banner Surface
         Surface(tonalElevation = 4.dp) {
             Column(
                 modifier = Modifier
@@ -182,13 +166,95 @@ fun ExecutionTimeline(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Conflict resolution card if waiting for approval with conflicts
-                if (executionState is ExecutionState.WaitingForApproval) {
-                    val plan = executionState.plan
-                    val preflight = WorkspaceEngine().preflight(plan.actions)
-                    if (preflight.conflictsCount > 0) {
+                when (agentState) {
+                    is AgentState.AwaitingConfirmation -> {
                         Card(
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Warning,
+                                        contentDescription = "Confirmation required",
+                                        tint = MaterialTheme.colorScheme.onTertiaryContainer
+                                    )
+                                    Text(
+                                        "Allow this change?",
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                        fontSize = 14.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    agentState.action.preview,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    fontSize = 13.sp
+                                )
+                                if (agentState.action.toolName == "delete") {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        "Deleted items go to the app trash and can be restored.",
+                                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f),
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { onConfirmAction(true) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .defaultMinSize(minHeight = 48.dp)
+                            ) { Text("Allow") }
+
+                            OutlinedButton(
+                                onClick = { onConfirmAction(false) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .defaultMinSize(minHeight = 48.dp)
+                            ) { Text("Skip") }
+                        }
+                    }
+
+                    is AgentState.Thinking, is AgentState.Working -> {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            Text(
+                                text = when (agentState) {
+                                    is AgentState.Working -> agentState.preview
+                                    else -> "Thinking…"
+                                },
+                                modifier = Modifier.weight(1f),
+                                fontSize = 13.sp
+                            )
+                            OutlinedButton(
+                                onClick = onStop,
+                                modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                            ) { Text("Stop") }
+                        }
+                    }
+
+                    is AgentState.Failed -> {
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer
+                            ),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
@@ -196,109 +262,37 @@ fun ExecutionTimeline(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(Icons.Default.Warning, contentDescription = "Conflict warning", tint = MaterialTheme.colorScheme.onErrorContainer)
+                                Icon(
+                                    Icons.Default.Error,
+                                    contentDescription = "Failure",
+                                    tint = MaterialTheme.colorScheme.onErrorContainer
+                                )
                                 Column {
-                                    Text("Destination Conflicts Detected", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 13.sp)
-                                    Text("${preflight.conflictsCount} target file(s) exist. Approving will overwrite existing files safely using snapshot backups.", color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 12.sp)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Recovery failure state UI card
-                if (executionState is ExecutionState.Failed) {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(Icons.Default.Error, contentDescription = "Recovery Failure", tint = MaterialTheme.colorScheme.onErrorContainer)
-                            Column {
-                                Text("Execution / Recovery Failure", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 13.sp)
-                                Text(executionState.error, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 12.sp)
-                                failureHint(executionState.error)?.let { hint ->
-                                    Spacer(modifier = Modifier.height(6.dp))
                                     Text(
-                                        text = hint,
+                                        "Could not finish",
+                                        fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onErrorContainer,
-                                        fontSize = 11.sp
+                                        fontSize = 13.sp
                                     )
+                                    Text(
+                                        agentState.error,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        fontSize = 12.sp
+                                    )
+                                    failureHint(agentState.error)?.let { hint ->
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            hint,
+                                            color = MaterialTheme.colorScheme.onErrorContainer,
+                                            fontSize = 11.sp
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    when (executionState) {
-                        is ExecutionState.WaitingForApproval -> {
-                            Button(
-                                onClick = onApprovePlan,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                            ) {
-                                Text("Approve Plan")
-                            }
-                            OutlinedButton(
-                                onClick = onSoftStop,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                            ) {
-                                Text("Cancel")
-                            }
-                        }
-                        is ExecutionState.WaitingForRepairApproval -> {
-                            Button(
-                                onClick = onApproveRepairPlan,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                            ) {
-                                Text("Approve Repair")
-                            }
-                            OutlinedButton(
-                                onClick = onHardStop,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                            ) {
-                                Text("Abort")
-                            }
-                        }
-                        is ExecutionState.Executing, is ExecutionState.Planning, is ExecutionState.Verifying -> {
-                            CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                when (executionState) {
-                                    is ExecutionState.Planning -> "Planning..."
-                                    is ExecutionState.Executing -> "Executing..."
-                                    is ExecutionState.Verifying -> "Verifying..."
-                                },
-                                modifier = Modifier.weight(1f)
-                            )
-                            OutlinedButton(
-                                onClick = onHardStop,
-                                modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                            ) {
-                                Text("Hard Stop")
-                            }
-                        }
-                        is ExecutionState.Completed, is ExecutionState.Failed, is ExecutionState.Idle -> {
-                            // Ready for user prompts
-                        }
-                    }
+                    is AgentState.Idle, is AgentState.Done -> Unit
                 }
             }
         }
@@ -330,7 +324,9 @@ private fun TimelineCard(
                 imageVector = icon,
                 contentDescription = iconDescription,
                 tint = contentColor.copy(alpha = 0.85f),
-                modifier = Modifier.size(20.dp).padding(top = 2.dp)
+                modifier = Modifier
+                    .size(20.dp)
+                    .padding(top = 2.dp)
             )
             Column(modifier = Modifier.weight(1f)) {
                 Row(
@@ -338,8 +334,17 @@ private fun TimelineCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(title, style = MaterialTheme.typography.labelLarge, color = contentColor, fontWeight = FontWeight.Bold)
-                    Text(badgeText, style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.7f))
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = contentColor,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        badgeText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = contentColor.copy(alpha = 0.7f)
+                    )
                 }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(content, style = MaterialTheme.typography.bodyMedium)
@@ -349,18 +354,16 @@ private fun TimelineCard(
 }
 
 /**
- * Turns raw agent/sandbox failures into a short, actionable suggestion for the user, so the
- * error card explains what to do next instead of only showing an internal message.
+ * Turns raw agent failures into a short, actionable suggestion so the error card explains what
+ * to do next instead of only showing an internal message.
  */
 internal fun failureHint(error: String): String? = when {
-    error.contains("reasoning steps", ignoreCase = true) ||
-        error.contains("maximum iterations", ignoreCase = true) ->
+    error.contains("steps without finishing", ignoreCase = true) ||
+        error.contains("reasoning steps", ignoreCase = true) ->
         "Tip: try a narrower request, e.g. name the folder or the specific files to act on."
 
-    error.contains("denied outside workspace", ignoreCase = true) ->
-        "The AI tried to modify a file directly instead of proposing it as an action. Re-run the request; it should propose a plan you can approve."
-
-    error.contains("Read denied", ignoreCase = true) ->
+    error.contains("outside your shared storage", ignoreCase = true) ||
+        error.contains("Read denied", ignoreCase = true) ->
         "That location is outside your shared storage. Try a path under /storage/emulated/0."
 
     error.contains("Provider not configured", ignoreCase = true) ->

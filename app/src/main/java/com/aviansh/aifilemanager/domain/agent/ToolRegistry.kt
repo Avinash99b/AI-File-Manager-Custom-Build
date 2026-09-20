@@ -1,23 +1,11 @@
 package com.aviansh.aifilemanager.domain.agent
 
-class ToolRegistry(
-    tools: List<AgentTool> = emptyList()
-) {
-    private val toolMap = tools.associateBy { it.name }.toMutableMap()
+class ToolRegistry(private val tools: List<AgentTool>) {
 
-    fun register(tool: AgentTool) {
-        toolMap[tool.name] = tool
-    }
+    fun find(name: String): AgentTool? =
+        tools.firstOrNull { it.name.equals(name, ignoreCase = true) }
 
-    fun find(name: String): AgentTool? = toolMap[name]
+    fun all(): List<AgentTool> = tools
 
-    fun describeTools(): String = buildString {
-        toolMap.values.forEachIndexed { idx, tool ->
-            appendLine("${idx + 1}. ${tool.name}:")
-            appendLine("   Description: ${tool.description}")
-            appendLine("   Input: ${tool.definition.argsSchema}")
-        }
-    }
-
-    fun getAllTools(): List<AgentTool> = toolMap.values.toList()
+    fun describeTools(): String = tools.joinToString("\n") { it.spec.describe() }
 }

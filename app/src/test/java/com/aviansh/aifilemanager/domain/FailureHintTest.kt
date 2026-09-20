@@ -11,19 +11,10 @@ class FailureHintTest {
     @Test
     fun iterationExhaustionSuggestsNarrowingTheRequest() {
         val hint = failureHint(
-            "The agent used all 12 reasoning steps without reaching a conclusion."
+            "The agent used all 16 steps without finishing. Try a more specific request."
         )
         assertNotNull(hint)
         assertTrue(hint!!.contains("narrower"))
-    }
-
-    @Test
-    fun sandboxWriteDenialIsExplainedInUserTerms() {
-        val hint = failureHint(
-            "PermissionError: Write denied outside workspace: /storage/emulated/0/Download/a.pdf"
-        )
-        assertNotNull(hint)
-        assertTrue(hint!!.contains("propose a plan"))
     }
 
     @Test
@@ -35,7 +26,7 @@ class FailureHintTest {
 
     @Test
     fun readDenialMentionsSharedStorage() {
-        val hint = failureHint("Read denied outside allowed roots: /data/misc/x")
+        val hint = failureHint("Read denied: /data/misc/x is outside your shared storage")
         assertNotNull(hint)
         assertTrue(hint!!.contains("/storage/emulated/0"))
     }

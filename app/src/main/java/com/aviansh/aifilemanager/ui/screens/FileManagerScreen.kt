@@ -24,7 +24,10 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.aviansh.aifilemanager.domain.agent.ExecutionState
+import androidx.compose.material.icons.filled.RestoreFromTrash
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import com.aviansh.aifilemanager.domain.agent.AgentState
 import com.aviansh.aifilemanager.domain.repository.FileRepository
 import com.aviansh.aifilemanager.ui.components.ExecutionTimeline
 import com.aviansh.aifilemanager.ui.vm.FileManagerEvent
@@ -42,7 +45,8 @@ fun FileManagerScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val timeline by viewModel.timeline.collectAsState()
-    val executionState by viewModel.executionState.collectAsState()
+    val agentState by viewModel.agentState.collectAsState()
+    val trashItems by viewModel.trashItems.collectAsState()
     val events by viewModel.events.collectAsState(null)
 
     val sheetState = rememberBottomSheetScaffoldState(
@@ -54,6 +58,7 @@ fun FileManagerScreen(
 
     var promptText by remember { mutableStateOf("") }
     var showBulkDeleteDialog by remember { mutableStateOf(false) }
+    var showTrashDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(events) {
         events?.let { event ->
@@ -64,6 +69,8 @@ fun FileManagerScreen(
                 is FileManagerEvent.FilesMoved -> snackbarHostState.showSnackbar("Cut ${event.count} item(s) to clipboard")
                 is FileManagerEvent.FolderCreated -> snackbarHostState.showSnackbar("Created folder: ${event.folderName}")
                 is FileManagerEvent.TransactionComplete -> snackbarHostState.showSnackbar("✅ ${event.actionCount} operation(s) completed")
+                is FileManagerEvent.FileRestored -> snackbarHostState.showSnackbar("Restored ${event.fileName}")
+                is FileManagerEvent.TrashEmptied -> snackbarHostState.showSnackbar("Trash emptied (${event.count} item(s))")
                 is FileManagerEvent.Error -> snackbarHostState.showSnackbar(event.message, duration = SnackbarDuration.Long)
             }
         }
@@ -110,19 +117,9 @@ fun FileManagerScreen(
         Column(modifier = modifier) {
             ExecutionTimeline(
                 timeline = timeline,
-                executionState = executionState,
-                onApprovePlan = {
-                    if (executionState is ExecutionState.WaitingForApproval) {
-                        viewModel.onApprovePlan((executionState as ExecutionState.WaitingForApproval).plan)
-                    }
-                },
-                onSoftStop = { viewModel.onSoftStop() },
-                onHardStop = { viewModel.onHardStop() },
-                onApproveRepairPlan = {
-                    if (executionState is ExecutionState.WaitingForRepairApproval) {
-                        viewModel.onApproveRepairPlan((executionState as ExecutionState.WaitingForRepairApproval).repairPlan)
-                    }
-                },
+                agentState = agentState,
+                onConfirmAction = { approved -> viewModel.onConfirmAction(approved) },
+                onStop = { viewModel.onStop() },
                 modifier = Modifier.weight(1f)
             )
 
@@ -193,6 +190,15 @@ fun FileManagerScreen(
                         ) {
                             Icon(Icons.Default.DeleteSweep, contentDescription = "Clear Session", tint = MaterialTheme.colorScheme.error)
                         }
+                        IconButton(
+                            onClick = {
+                                viewModel.loadTrash()
+                                showTrashDialog = true
+                            },
+                            modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        ) {
+                            Icon(Icons.Default.RestoreFromTrash, contentDescription = "Open trash")
+                        }
                         OutlinedTextField(
                             value = promptText,
                             onValueChange = { promptText = it },
@@ -205,7 +211,7 @@ fun FileManagerScreen(
                                     promptText = ""
                                 }
                             }),
-                            enabled = executionState is ExecutionState.Idle || executionState is ExecutionState.Completed || executionState is ExecutionState.Failed
+                            enabled = !(agentState is AgentState.Thinking || agentState is AgentState.Working || agentState is AgentState.AwaitingConfirmation)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         IconButton(
@@ -215,7 +221,7 @@ fun FileManagerScreen(
                                     promptText = ""
                                 }
                             },
-                            enabled = promptText.isNotBlank() && (executionState is ExecutionState.Idle || executionState is ExecutionState.Completed || executionState is ExecutionState.Failed),
+                            enabled = promptText.isNotBlank() && !(agentState is AgentState.Thinking || agentState is AgentState.Working || agentState is AgentState.AwaitingConfirmation),
                             modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                         ) {
                             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
@@ -396,6 +402,62 @@ fun FileManagerScreen(
                 }
             }
         }
+    }
+
+    if (showTrashDialog) {
+        AlertDialog(
+            onDismissRequest = { showTrashDialog = false },
+            title = { Text("Trash") },
+            text = {
+                if (trashItems.isEmpty()) {
+                    Text("Trash is empty. Items the agent deletes or overwrites land here and can be restored.")
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                        items(trashItems) { item ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(item.name, fontSize = 14.sp)
+                                    Text(
+                                        "${item.originalPath} · ${item.trashedAtFormatted}",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                TextButton(
+                                    onClick = { viewModel.restoreFromTrash(item.id) },
+                                    modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                                ) {
+                                    Text("Restore")
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { showTrashDialog = false },
+                    modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                ) {
+                    Text("Close")
+                }
+            },
+            dismissButton = {
+                if (trashItems.isNotEmpty()) {
+                    TextButton(
+                        onClick = { viewModel.emptyTrash() },
+                        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                    ) {
+                        Text("Empty trash", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        )
     }
 
     if (showBulkDeleteDialog) {
