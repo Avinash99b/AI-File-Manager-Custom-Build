@@ -17,6 +17,9 @@ import java.util.concurrent.TimeoutException
 object PythonEngine {
 
     private const val TAG = "PythonEngine"
+
+    /** Marks the single line of stdout that carries the generated action list. */
+    private const val RESULT_MARKER = "__AIFM_ACTIONS__"
     private val executor = Executors.newCachedThreadPool()
 
     /**
@@ -355,8 +358,33 @@ object PythonEngine {
         denyNetwork: Boolean = true
     ): String {
         val normalizedCode = cleanAndNormalizeCode(code)
+
+        // generate() may legitimately return either a Python list of dicts or an already
+        // JSON-encoded string. Blindly calling json.dumps() double-encoded the latter into a
+        // quoted string, which then failed to parse as a JSON array. Normalize both shapes here.
+        val runner = """
+            |import json as _json
+            |_result = generate()
+            |if isinstance(_result, (str, bytes, bytearray)):
+            |    _text = _result.decode() if isinstance(_result, (bytes, bytearray)) else _result
+            |    _parsed = _json.loads(_text)
+            |else:
+            |    _parsed = _result
+            |while isinstance(_parsed, str):
+            |    _parsed = _json.loads(_parsed)
+            |if isinstance(_parsed, dict):
+            |    _parsed = [_parsed]
+            |if _parsed is None:
+            |    _parsed = []
+            |if not isinstance(_parsed, list):
+            |    raise TypeError(
+            |        "generate() must return a list of action objects, got " + type(_parsed).__name__
+            |    )
+            |print("$RESULT_MARKER" + _json.dumps(_parsed))
+        """.trimMargin()
+
         val request = PythonExecutionRequest(
-            code = "import json\n$normalizedCode\nprint(json.dumps(generate()))",
+            code = "$normalizedCode\n$runner",
             workspaceDir = workspaceDir,
             allowedReadRoots = allowedReadRoots,
             timeoutMillis = timeoutMillis,
@@ -367,12 +395,26 @@ object PythonEngine {
             throw IllegalStateException(output)
         }
 
-        return output.lineSequence()
+        // Anything generate() printed for its own debugging is ignored; only the marked line
+        // is treated as the result, so a stray print() no longer corrupts the plan.
+        val jsonLine = output.lineSequence()
             .map(String::trim)
-            .filter(String::isNotEmpty)
-            .lastOrNull()
-            ?.also { JSONArray(it) }
-            ?: throw IllegalStateException("generate() returned no JSON output")
+            .lastOrNull { it.startsWith(RESULT_MARKER) }
+            ?.removePrefix(RESULT_MARKER)
+            ?: throw IllegalStateException(
+                "generate() produced no action list. Output was: ${output.take(400)}"
+            )
+
+        try {
+            JSONArray(jsonLine)
+        } catch (e: Exception) {
+            throw IllegalStateException(
+                "generate() must return a list of action objects. Got: ${jsonLine.take(200)}",
+                e
+            )
+        }
+
+        return jsonLine
     }
 
     fun generateMessage(generatorCode: String): String = executeGeneratorCode(generatorCode)
@@ -392,10 +434,18 @@ object PythonEngine {
                     "Unknown action: ${obj.getString("action")}"
                 )
             }
+            // obj.getString("destination") returns the literal text "null" for a JSON null,
+            // which would later be treated as a real path. isNull() is the correct check.
+            val destination = if (obj.has("destination") && !obj.isNull("destination")) {
+                obj.getString("destination").takeIf { it.isNotBlank() }
+            } else {
+                null
+            }
+
             FileAction(
                 type = type,
                 sourcePath = obj.getString("source"),
-                destinationPath = if (obj.has("destination")) obj.getString("destination") else null,
+                destinationPath = destination,
                 overwrite = obj.optBoolean("overwrite", false)
             ).also { action ->
                 if (action.destinationPath.isNullOrBlank() && type != FileActionType.DELETE) {

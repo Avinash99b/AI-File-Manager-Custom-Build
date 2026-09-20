@@ -90,7 +90,7 @@ Once you have gathered enough information and are ready to propose a plan to the
   "generatorCode": "def generate():\n    import os\n    # python code that returns a JSON list of actions"
 }
 
-The Python `generate()` function in the final plan MUST return a JSON-encoded list of actions.
+The Python `generate()` function in the final plan MUST return a plain Python list of action dicts, e.g. `return [{"action": "delete", "source": "/abs/path", "destination": None, "overwrite": False}]`. Do NOT call json.dumps() yourself and do NOT print the result - just return the list. Returning an already JSON-encoded string is tolerated, but returning the list directly is preferred.
 Allowed action types: move, copy, delete, create.
 
 Field rules:
